@@ -1,0 +1,349 @@
+{
+  "common": {
+    "description": "常用设置",
+    "hint": "先选择模型，其余通常保持默认。",
+    "type": "object",
+    "items": {
+      "auto_special_live": {
+        "description": "特别关注直播通知",
+        "type": "bool",
+        "default": true,
+        "hint": "自动监听特别关注的开播和下播，不受普通关注通知开关影响。"
+      },
+      "auto_adjustment_with_schedule": {
+        "description": "有周表时自动调播",
+        "type": "bool",
+        "default": true,
+        "hint": "特别关注有本周周表且已选择模型后自动生效，无需开启完整动态轮询。"
+      },
+      "enable_midnight_schedule_check": {
+        "description": "每日零点检查周表",
+        "type": "bool",
+        "default": true,
+        "hint": "北京时间每日零点检查已手动解析的订阅周表；重载后补查当日，独立于动态轮询"
+      },
+      "schedule_provider_id": {
+        "description": "周表识别模型",
+        "type": "string",
+        "default": "",
+        "hint": "请选择支持图片输入的模型。留空时只缓存图片，不解析周表。",
+        "_special": "select_provider"
+      },
+      "adjustment_provider_id": {
+        "description": "调播判断模型",
+        "type": "string",
+        "default": "",
+        "hint": "请选择支持工具调用的模型；留空时使用周表识别模型。",
+        "_special": "select_provider"
+      },
+      "greeting_provider_id": {
+        "description": "凌晨问候模型",
+        "type": "string",
+        "default": "",
+        "hint": "用于 /vt_4016 造句；留空时复用周表识别模型，模型不可用时使用固定句式。",
+        "_special": "select_provider"
+      }
+    }
+  },
+  "notifications": {
+    "description": "通知内容",
+    "hint": "直播标题和封面会随开播通知发送。",
+    "type": "object",
+    "items": {
+      "normal_live_start_push": {
+        "description": "普通关注开播通知",
+        "type": "bool",
+        "default": true,
+        "hint": "需要开启“同时监听普通关注”；不影响特别关注通知。"
+      },
+      "normal_live_end_push": {
+        "description": "普通关注下播通知",
+        "type": "bool",
+        "default": true,
+        "hint": "需要开启“同时监听普通关注”；不影响特别关注通知。"
+      },
+      "enable_schedule_push": {
+        "description": "周表更新通知",
+        "type": "bool",
+        "default": false,
+        "hint": "向特别关注发送周表更新摘要，需要动态任务投递。"
+      },
+      "enable_adjustment_push": {
+        "description": "调播结果通知",
+        "type": "bool",
+        "default": false,
+        "hint": "向特别关注发送调播结果。关闭仅停止通知，不停止自动修改周表。"
+      }
+    }
+  },
+  "live": {
+    "description": "直播监听",
+    "hint": "特别关注默认监听，下方可扩展到普通关注并调整频率。",
+    "type": "object",
+    "items": {
+      "enable_live_polling": {
+        "description": "同时监听普通关注",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后也监听普通关注；关闭不影响特别关注自动监听。"
+      },
+      "live_poll_interval": {
+        "description": "基础间隔（秒）",
+        "type": "float",
+        "default": 120,
+        "hint": "默认 120 秒，范围 10–86400。每轮结束后等待此时长，再叠加随机延迟。"
+      },
+      "live_poll_jitter": {
+        "description": "随机延迟上限（秒）",
+        "type": "float",
+        "default": 60,
+        "hint": "默认 60 秒，实际间隔为 120–180 秒；填 0 关闭随机延迟，范围 0–3600。"
+      }
+    }
+  },
+  "schedule": {
+    "description": "周表与调播",
+    "hint": "进阶选项：默认自动调播已够用，一般无需再开启手动处理开关。",
+    "type": "object",
+    "items": {
+      "enable_dynamic_polling": {
+        "description": "完整动态轮询",
+        "type": "bool",
+        "default": false,
+        "hint": "轮询所有特别关注。自动调播模式会自行检查有本周周表且有模型的主播。"
+      },
+      "enable_schedule_processing": {
+        "description": "动态中发现周表",
+        "type": "bool",
+        "default": false,
+        "hint": "完整动态轮询时发现周表候选；无视觉模型时仅保存图片。"
+      },
+      "enable_adjustment_processing": {
+        "description": "手动启用调播处理",
+        "type": "bool",
+        "default": false,
+        "hint": "保留手动入口，需要动态任务、本周周表和模型。关闭本项不会关闭“有周表时自动调播”。"
+      },
+      "dynamic_poll_interval": {
+        "description": "动态检查间隔（秒）",
+        "type": "float",
+        "default": 300,
+        "hint": "动态检查每轮结束后的等待秒数（30–86400）"
+      },
+      "schedule_keywords": {
+        "description": "周表关键词",
+        "type": "list",
+        "default": [
+          "周表",
+          "本周",
+          "schedule",
+          "直播安排",
+          "本周安排"
+        ],
+        "hint": "周表候选关键词；带图片的置顶动态也会作为候选"
+      },
+      "adjustment_regex": {
+        "description": "调播关键词",
+        "type": "string",
+        "default": "改到|改为|改成|延期|推迟|提前|顺延|取消|鸽|补播|加播|临时",
+        "hint": "调播候选规则，仅支持用 | 分隔关键词（禁止复杂正则）"
+      }
+    }
+  },
+  "account": {
+    "description": "Bilibili 登录",
+    "hint": "推荐私聊发送 /bili_login 扫码登录，无需手动填写凭据。",
+    "type": "object",
+    "items": {
+      "bilibili_sessdata": {
+        "description": "手动登录凭据（可选）",
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "hint": "推荐使用 /bili_login。手动填写时只填 Cookie 中 SESSDATA 的值，可留空。"
+      }
+    }
+  },
+  "advanced": {
+    "description": "高级设置",
+    "hint": "网络与截图参数通常保持默认。修改配置后重载插件。",
+    "type": "object",
+    "items": {
+      "screenshot_browser_channel": {
+        "description": "截图浏览器",
+        "type": "string",
+        "default": "auto",
+        "hint": "auto 自动选择；Windows 无 Chromium 时使用 Edge。其他选项需安装对应浏览器。",
+        "options": [
+          "auto",
+          "chromium",
+          "msedge",
+          "chrome"
+        ]
+      },
+      "request_timeout": {
+        "description": "请求超时（秒）",
+        "type": "float",
+        "default": 10,
+        "hint": "Bilibili 请求超时（秒，0 < 值 <= 120）"
+      },
+      "max_retry": {
+        "description": "普通错误重试次数",
+        "type": "int",
+        "default": 2,
+        "hint": "范围 0–5，仅针对普通网络或服务端错误。风控响应直接进入冷却，不立即重试。"
+      }
+    }
+  },
+  "_grouped_config_migrated": {
+    "description": "配置迁移标记",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "auto_special_live": {
+    "description": "默认自动监听特别关注的直播；普通关注仍由 enable_live_polling 控制",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "auto_adjustment_with_schedule": {
+    "description": "特别关注已有本周周表且配置模型时自动读取动态并调播，无需手动开启动态轮询",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "live_poll_jitter": {
+    "description": "直播轮询每轮额外随机等待的最大秒数（0–3600）；默认搭配120秒基础间隔，实际120–180秒",
+    "type": "float",
+    "default": 60,
+    "invisible": true
+  },
+  "enable_midnight_schedule_check": {
+    "description": "北京时间每日零点检查已手动解析的订阅周表；重载后补查当日，独立于动态轮询",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "screenshot_browser_channel": {
+    "description": "置顶动态截图浏览器：auto 自动选 Chromium，Windows 未安装时用 Edge；也可指定 chromium/msedge/chrome",
+    "type": "string",
+    "default": "auto",
+    "invisible": true
+  },
+  "enable_adjustment_processing": {
+    "description": "自动识别特别关注的新动态并通过受控工具调播（需动态轮询及本周周表）",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "adjustment_provider_id": {
+    "description": "支持工具调用的模型提供商 ID，留空复用 schedule_provider_id",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "greeting_provider_id": {
+    "description": "凌晨问候模型提供商 ID，留空复用 schedule_provider_id",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "adjustment_regex": {
+    "description": "调播候选规则，仅支持用 | 分隔关键词（禁止复杂正则）",
+    "type": "string",
+    "default": "改到|改为|改成|延期|推迟|提前|顺延|取消|鸽|补播|加播|临时",
+    "invisible": true
+  },
+  "enable_schedule_push": {
+    "description": "周表更新摘要通知，仅发给特别关注会话，需动态轮询投递",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "enable_adjustment_push": {
+    "description": "调播生效通知，仅发给特别关注会话，需动态轮询投递",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "enable_schedule_processing": {
+    "description": "动态轮询时处理周表候选（需同时开启动态轮询；无视觉模型时仅存图片）",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "schedule_provider_id": {
+    "description": "用于周表图片解析的视觉模型提供商 ID（留空不调用模型）",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "schedule_keywords": {
+    "description": "周表候选关键词；带图片的置顶动态也会作为候选",
+    "type": "list",
+    "default": [
+      "周表",
+      "本周",
+      "schedule",
+      "直播安排",
+      "本周安排"
+    ],
+    "invisible": true
+  },
+  "bilibili_sessdata": {
+    "description": "Bilibili SESSDATA（仅填写 Cookie 的值，可留空尝试匿名访问；修改后重载）",
+    "type": "string",
+    "secret": true,
+    "default": "",
+    "invisible": true
+  },
+  "enable_dynamic_polling": {
+    "description": "启用特别关注动态轮询（完成联调后开启，修改后重载）",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "dynamic_poll_interval": {
+    "description": "动态检查每轮结束后的等待秒数（30–86400）",
+    "type": "float",
+    "default": 300,
+    "invisible": true
+  },
+  "enable_live_polling": {
+    "description": "启用后台直播轮询（真实联调验收后手动开启，修改后重载插件）",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "live_poll_interval": {
+    "description": "每轮直播检查完成后的等待秒数（10–86400）",
+    "type": "float",
+    "default": 120,
+    "invisible": true
+  },
+  "normal_live_start_push": {
+    "description": "普通关注开播通知",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "normal_live_end_push": {
+    "description": "普通关注下播通知",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "request_timeout": {
+    "description": "Bilibili 请求超时（秒，0 < 值 <= 120）",
+    "type": "float",
+    "default": 10,
+    "invisible": true
+  },
+  "max_retry": {
+    "description": "Bilibili 请求失败后的重试次数（0–5）",
+    "type": "int",
+    "default": 2,
+    "invisible": true
+  }
+}
