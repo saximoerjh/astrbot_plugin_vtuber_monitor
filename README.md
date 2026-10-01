@@ -120,7 +120,7 @@ python -m playwright install chromium
 ## ❓ 常见问题
 
 1. **周表图片或动态截图在手机上偏小？**  
-   可读性只取决于「字号 ÷ 图片宽度」，与像素密度无关。周表按"字号占宽度约 2%"设计（840px 宽、两行四列、二倍像素密度）；动态截图按约 2.9% 设计（B 站卡片列宽固定 632px、正文放大到 18px、二倍像素密度）。要再调大就改 `services/schedule_renderer.py`（`BOARD_WIDTH` / `FONT_SCALE`）或 `services/pinned_screenshot.py`（`DEVICE_SCALE` / `FONT_SCALE`），两者都有 `--variants` 预览工具可以直接对比。
+   可读性只取决于「字号 ÷ 图片宽度」，与像素密度无关。周表按"字号占宽度约 2%"设计（840px 宽、两行四列、二倍像素密度）；动态截图按约 3.3% 设计（B 站卡片列宽固定 632px、卡片内字号统一放大 1.4 倍到 21px、二倍像素密度）。要再调大就改 `services/schedule_renderer.py`（`BOARD_WIDTH` / `FONT_SCALE`）或 `services/pinned_screenshot.py`（`DEVICE_SCALE` / `FONT_SCALE`），两者都有 `--variants` 预览工具可以直接对比。
 
 2. **周表图片没有头图或头像？**  
    该主播可能没设置空间头图，或抓取失败。素材按 7 天 TTL 刷新，当天失败不会重试；从来没成功获取过时会退回纯文字标题行。原因记录在 `plugin_data/astrbot_plugin_vtuber_monitor/profiles/<UID>/profile.json` 的 `errors` 字段。

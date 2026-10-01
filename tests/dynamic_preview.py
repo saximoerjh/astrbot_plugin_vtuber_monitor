@@ -17,7 +17,7 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 from astrbot_plugin_vtuber_monitor.services.pinned_screenshot import (  # noqa: E402
-    DEVICE_SCALE, FONT_SCALE, VIEWPORT_WIDTH, card_style)
+    DEVICE_SCALE, FONT_SCALE, VIEWPORT_WIDTH, card_script, card_style)
 
 
 async def load_post(uid, latest):
@@ -68,7 +68,8 @@ async def capture(bili, post, path, *, width=VIEWPORT_WIDTH, scale=DEVICE_SCALE,
             await page.goto(f"https://t.bilibili.com/{post.id}", wait_until="domcontentloaded", timeout=30000)
             card = page.locator(".bili-dyn-item, .opus-detail").first
             await card.wait_for(state="visible")
-            await page.add_style_tag(content=card_style(font_scale))
+            await page.add_style_tag(content=card_style())
+            await card.evaluate(card_script(), font_scale)
             for image in await card.locator("img:visible").all():
                 await image.scroll_into_view_if_needed()
             await card.evaluate("""async el => {

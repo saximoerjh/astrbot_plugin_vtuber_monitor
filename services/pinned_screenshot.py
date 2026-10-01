@@ -12,25 +12,42 @@ from ..bili_client import BiliClient
 # 而 632px 的位图在高分屏上还要被放大一次，所以这里同时提高像素密度与正文字号。
 VIEWPORT_WIDTH = 1280
 DEVICE_SCALE = 2
-FONT_SCALE = 1.2
+FONT_SCALE = 1.4
 BASE_FONT_PX = 15
-TEXT_SELECTORS = (".bili-rich-text", ".bili-rich-text__content",
-                  ".dyn-card-opus__summary", ".dyn-card-opus__title")
 # Chromium 单张截图的高度上限约 16000 物理像素。
 MAX_PIXEL_HEIGHT = 16000
 
 
-def card_style(font_scale=FONT_SCALE):
-    """展开被折叠的正文，并按 font_scale 放大正文字号。"""
-    text = ", ".join(TEXT_SELECTORS)
-    return f"""
-        .dyn-card-opus__summary, .dyn-card-opus__title, .bili-rich-text__content {{
+def card_style():
+    """展开被折叠的正文，但不改动动态内容本身。"""
+    return """
+        .dyn-card-opus__summary, .dyn-card-opus__title, .bili-rich-text__content {
             max-height: none !important; height: auto !important;
             -webkit-line-clamp: unset !important; overflow: visible !important;
             white-space: normal !important;
-        }}
-        {text} {{ font-size: {BASE_FONT_PX * font_scale:g}px !important; line-height: 1.7 !important; }}
+        }
     """
+
+
+def card_script():
+    """按同一倍率放大卡片内所有字号与 px 行高。
+
+    正文的 class 名会变，而且真正带字形的子元素自带 px 字号、覆盖不掉，
+    所以逐个元素按它当前的**计算值**放大；先把尺寸全读完再写回，避免逐层相乘。
+    """
+    return """(card, scale) => {
+        if (!card) return;
+        const nodes = [card, ...card.querySelectorAll('*')];
+        const metrics = nodes.map(el => {
+            const style = getComputedStyle(el);
+            return [parseFloat(style.fontSize) || 0, /^([\\d.]+)px$/.exec(style.lineHeight)];
+        });
+        nodes.forEach((el, index) => {
+            const [font, line] = metrics[index];
+            if (font) el.style.setProperty('font-size', (font * scale).toFixed(2) + 'px', 'important');
+            if (line) el.style.setProperty('line-height', (parseFloat(line[1]) * scale).toFixed(2) + 'px', 'important');
+        });
+    }"""
 
 
 class ScreenshotError(Exception):
@@ -86,8 +103,9 @@ class PinnedScreenshot:
                     raise ScreenshotError("动态页面返回错误或风控，未获得完整截图。")
                 card = page.locator(".bili-dyn-item, .opus-detail").first
                 await card.wait_for(state="visible")
-            # 展开已知的文本容器，但不改动动态本身的内容。
-                await page.add_style_tag(content=card_style(self.font_scale))
+            # 展开已知的文本容器，再按同一倍率放大字号，但不改动动态内容本身。
+                await page.add_style_tag(content=card_style())
+                await card.evaluate(card_script(), self.font_scale)
                 for image in await card.locator("img:visible").all():
                     await image.scroll_into_view_if_needed()
                 await card.evaluate("""async el => {

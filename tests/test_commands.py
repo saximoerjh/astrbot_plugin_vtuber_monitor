@@ -166,18 +166,18 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         assert "合并转发发送失败" in fallback[0] and fallback[1:] == [["screenshot"], ["image1"], ["original text"]]
         plugin.pinned.build.return_value = None
         assert "未发现置顶" in ([x async for x in plugin.vt_pinned(event, "小路")])[0]
-        # /vt_latest 返回最新动态截图，截图失败退回文字并保留链接。
+        # /vt_latest 只带截图与动态链接，不带动态编号；截图失败退回文字。
         post = SimpleNamespace(id="100", text="周表正文", images=("https://i0.hdslb.com/a.png",),
                                published_at=0, is_pinned=True)
         plugin.bili.get_latest_dynamics = AsyncMock(return_value=[post])
         plugin.screenshot = AsyncMock()
         plugin.screenshot.capture = AsyncMock(return_value=b"\x89PNGshot")
         monkeypatch.setattr(main, "image_then_text", lambda raw, text: ("image", text))
-        assert [x async for x in plugin.vt_latest(event, "小路")] == [
-            ("image", "动态 100\nhttps://t.bilibili.com/100")]
+        assert [x async for x in plugin.vt_latest(event, "小路")] == [("image", "https://t.bilibili.com/100")]
         plugin.screenshot.capture.side_effect = RuntimeError("browser down")
         fallback = [x async for x in plugin.vt_latest(event, "小路")]
         assert "动态截图未生成" in fallback[0] and "https://t.bilibili.com/100" in fallback[0]
+        assert "动态 100" not in fallback[0]
         entered = asyncio.Event()
         async def wait_forever():
             entered.set()

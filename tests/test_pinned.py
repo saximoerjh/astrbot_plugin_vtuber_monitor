@@ -8,17 +8,23 @@ from astrbot_plugin_vtuber_monitor.bili_client import BiliClient, BiliError
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost
 from astrbot_plugin_vtuber_monitor.services.pinned_service import PinnedService
 from astrbot_plugin_vtuber_monitor.services.pinned_screenshot import (
-    BASE_FONT_PX, DEVICE_SCALE, FONT_SCALE, PinnedScreenshot, ScreenshotError, card_style)
+    BASE_FONT_PX, DEVICE_SCALE, FONT_SCALE, PinnedScreenshot, ScreenshotError, card_script, card_style)
 
 
 def test_dynamic_screenshot_is_phone_readable_by_default():
     """动态页卡片列宽固定 632px，1x 截图只有 632px 宽，手机上会被当成缩略图看。"""
-    assert (DEVICE_SCALE, FONT_SCALE) == (2, 1.2)
-    # 字号占图片宽度的比例要高于周表图（约 2%），否则点开前读不清。
-    assert BASE_FONT_PX * FONT_SCALE / 632 > 0.025
+    assert (DEVICE_SCALE, FONT_SCALE) == (2, 1.4)
+    # 字号占图片宽度的比例要明显高于周表图（约 2%），否则点开前读不清。
+    assert BASE_FONT_PX * FONT_SCALE / 632 > 0.03
     style = card_style()
-    assert f"font-size: {BASE_FONT_PX * FONT_SCALE:g}px !important" in style
     assert "line-clamp: unset" in style
+    # 普通字符串里不能留 f-string 的双花括号，否则整条 CSS 规则会被浏览器丢掉。
+    assert "{{" not in style and "}}" not in style
+    assert PinnedScreenshot().font_scale == FONT_SCALE
+    # 带字形的子元素自带 px 字号，必须逐个元素按计算值放大，行高不能漏。
+    script = card_script()
+    assert "getComputedStyle" in script and "line-height" in script
+    assert "querySelectorAll('*')" in script
     assert PinnedScreenshot(scale=3, font_scale=1.5).font_scale == 1.5
 
 
