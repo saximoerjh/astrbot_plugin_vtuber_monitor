@@ -127,8 +127,5 @@ class Dispatcher:
     async def push_live_ended(self, state, subscriptions):
         await self._push(state, subscriptions, False)
 
-    async def push_test(self, umo):
-        return await self._send(umo, "VTuber Monitor 主动推送测试。")
-
     async def push_login_status(self, umo, text):
         return await self._send(umo, text)

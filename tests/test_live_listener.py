@@ -162,7 +162,7 @@ async def test_dispatcher_failures_options_and_special(tmp_path):
     assert context.send_message.await_args.args[0] == "b"
     assert context.send_message.await_count == 1
     context.send_message.return_value = False
-    assert not await dispatcher.push_test("a")
+    assert not await dispatcher.push_login_status("a", "t")
 
 
 @pytest.mark.asyncio
@@ -172,10 +172,10 @@ async def test_send_timeout_and_cancellation():
         await asyncio.Event().wait()
     context.send_message.side_effect = hang
     dispatcher = Dispatcher(context, message_factory=str, send_timeout=0.01)
-    assert not await dispatcher.push_test("a")
+    assert not await dispatcher.push_login_status("a", "t")
     context.send_message.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
-        await dispatcher.push_test("a")
+        await dispatcher.push_login_status("a", "t")
 
 
 @pytest.mark.asyncio

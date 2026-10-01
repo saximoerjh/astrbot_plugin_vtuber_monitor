@@ -139,9 +139,6 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         fallback = [x async for x in plugin.vt_schedule(event, "小路", "2026-09-21")]
         assert "周表起始日" in fallback[0] and "实际直播：" in fallback[0]
         plugin.config["schedule_image_enabled"] = False
-        plugin.dispatcher.push_test = AsyncMock(return_value=True)
-        assert "已提交" in ([x async for x in plugin.vt_push_test(event)])[0]
-        plugin.dispatcher.push_test.assert_awaited_once_with(event.unified_msg_origin)
         plugin.pinned.build = AsyncMock(return_value=["screenshot", "image1", "original text"])
         monkeypatch.setattr(main, "forward_chain", lambda parts, sender: ["forward", parts, sender])
         monkeypatch.setattr(main, "message_parts", lambda parts: [[part] for part in parts])

@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.23")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.24")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -479,12 +479,6 @@ class MyPlugin(Star):
             text = str(exc)
         yield event.plain_result(text)
 
-    @filter.command("vt_push_test")
-    async def vt_push_test(self, event: AstrMessageEvent):
-        """向当前会话发送一条主动消息，用于人工联调。"""
-        success = await self.dispatcher.push_test(event.unified_msg_origin)
-        yield event.plain_result("推送请求已提交，请确认收到测试消息。" if success else "推送失败，请检查插件日志。")
-
     @filter.command("vt_4016")
     async def vt_4016(self, event: AstrMessageEvent):
         """看看现在哪个国家是凌晨四点。"""
@@ -510,7 +504,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.23\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.24\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"
