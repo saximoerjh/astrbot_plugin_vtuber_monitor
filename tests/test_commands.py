@@ -37,8 +37,9 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
     monkeypatch.delitem(sys.modules, module_name, raising=False)
     main = importlib.import_module(module_name)
     event = SimpleNamespace(unified_msg_origin="qq:GroupMessage:123", plain_result=lambda s: s,
-                            get_sender_id=lambda: "user1")
-    plugin = main.MyPlugin(object(), {"auto_special_live": False, "auto_adjustment_with_schedule": False})
+                            image_result=lambda path: ("image", path), get_sender_id=lambda: "user1")
+    plugin = main.MyPlugin(object(), {"auto_special_live": False, "auto_adjustment_with_schedule": False,
+                                      "schedule_image_enabled": False})
     try:
         await plugin.initialize()
         assert plugin.live_listener_task is None
@@ -122,6 +123,22 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         plugin.schedules.get_weekly_schedule.reset_mock()
         assert "时间待定" in ([x async for x in plugin.vt_schedule(event)])[0]
         plugin.schedules.get_weekly_schedule.assert_awaited_once_with(456, "")
+        # 开关打开时只发图片，版面数据来自同一份周表。
+        plugin.schedules.get_weekly_schedule.reset_mock()
+        plugin.schedule_renderer.render = AsyncMock(return_value="C:/tmp/week.png")
+        plugin.profiles.banner = AsyncMock(return_value={"header": "data:image/webp;base64,HEAD"})
+        plugin.config["schedule_image_enabled"] = True
+        assert [x async for x in plugin.vt_schedule(event, "小路", "2026-09-21")] == [("image", "C:/tmp/week.png")]
+        drawn = plugin.schedule_renderer.render.await_args.args[0]
+        # 图上是主播原名，不是给命令用的别名。
+        assert drawn["name"] == "主播" and len(drawn["days"]) == 7 and drawn["summary_ok"] is True
+        assert drawn["banner"]["header"] == "data:image/webp;base64,HEAD"
+        plugin.profiles.banner.assert_awaited_once_with(456)
+        # 渲染失败不能让查询失败，必须回退到纯文字。
+        plugin.schedule_renderer.render.side_effect = RuntimeError("browser down")
+        fallback = [x async for x in plugin.vt_schedule(event, "小路", "2026-09-21")]
+        assert "周表起始日" in fallback[0] and "实际直播：" in fallback[0]
+        plugin.config["schedule_image_enabled"] = False
         plugin.dispatcher.push_test = AsyncMock(return_value=True)
         assert "已提交" in ([x async for x in plugin.vt_push_test(event)])[0]
         plugin.dispatcher.push_test.assert_awaited_once_with(event.unified_msg_origin)

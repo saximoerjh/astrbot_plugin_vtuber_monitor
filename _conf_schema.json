@@ -147,6 +147,18 @@
         "type": "string",
         "default": "改到|改为|改成|延期|推迟|提前|顺延|取消|鸽|补播|加播|临时",
         "hint": "调播候选规则，仅支持用 | 分隔关键词（禁止复杂正则）"
+      },
+      "schedule_image_enabled": {
+        "description": "周表以图片回复",
+        "type": "bool",
+        "default": true,
+        "hint": "/vt_schedule 返回 7 列时间轴图片；渲染失败时自动回退为文字。"
+      },
+      "unfulfilled_after_hours": {
+        "description": "未兑现判定（小时）",
+        "type": "float",
+        "default": 2,
+        "hint": "排期到点后超过该小时数仍未开播、且没有被动态调播的场次，在周表中标记为未兑现。"
       }
     }
   },
@@ -223,6 +235,18 @@
     "description": "北京时间每日零点检查已手动解析的订阅周表；重载后补查当日，独立于动态轮询",
     "type": "bool",
     "default": true,
+    "invisible": true
+  },
+  "schedule_image_enabled": {
+    "description": "周表以图片回复：/vt_schedule 渲染 7 列时间轴截图，渲染失败自动回退文字",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "unfulfilled_after_hours": {
+    "description": "排期到点后仍未开播的判定小时数，超过即在周表标记为未兑现；默认 2 小时",
+    "type": "float",
+    "default": 2,
     "invisible": true
   },
   "screenshot_browser_channel": {

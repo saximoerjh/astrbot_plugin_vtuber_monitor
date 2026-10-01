@@ -1,6 +1,7 @@
 ﻿from astrbot.api import AstrBotConfig, logger
 import asyncio
 import time
+from datetime import timedelta
 
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
@@ -26,12 +27,14 @@ from .services.schedule_discovery import ScheduleDiscovery, DEFAULT_KEYWORDS
 from .services.target_service import TargetService
 from .services.pinned_screenshot import PinnedScreenshot
 from .services.pinned_service import PinnedService, forward_chain, message_parts
+from .services.profile_service import ProfileService
 from .services.schedule_image_selector import ScheduleImageSelector
 from .services.schedule_report import format_schedule_report
-from .services.schedule_display import format_stream
+from .services.schedule_display import format_stream, format_live_summary
+from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.14")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.15")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -51,18 +54,24 @@ class MyPlugin(Star):
         self.adjustment = None
         self.greeting = None
         self.pinned = None
+        self.profiles = None
+        self.profile_task = None
+        self.schedule_renderer = None
         self.schedule_watch_task = None
 
     async def initialize(self):
         if self.live_listener is not None:
             return
-        data = DataManager(StarTools.get_data_dir("astrbot_plugin_vtuber_monitor"))
+        data_dir = StarTools.get_data_dir("astrbot_plugin_vtuber_monitor")
+        data = DataManager(data_dir)
         await data.initialize()
         self.targets = TargetService(data)
         self.greeting = GreetingService(
             self.context, data,
             self.config.get("greeting_provider_id", "") or self.config.get("schedule_provider_id", ""))
         screenshot = PinnedScreenshot(self.config.get("screenshot_browser_channel", "auto"))
+        self.schedule_renderer = ScheduleRenderer(
+            data_dir, channel=self.config.get("screenshot_browser_channel", "auto"))
         self.dispatcher = Dispatcher(
             self.context,
             normal_start=self.config.get("normal_live_start_push", True),
@@ -76,7 +85,8 @@ class MyPlugin(Star):
                                           float(self.config.get("dynamic_poll_interval", 300)))
         self.dispatcher.schedule_enabled = bool(self.config.get("enable_schedule_push", False))
         self.dispatcher.adjustment_enabled = bool(self.config.get("enable_adjustment_push", False))
-        self.live_recorder = LiveScheduleRecorder(data)
+        self.live_recorder = LiveScheduleRecorder(
+            data, unfulfilled_after=timedelta(hours=float(self.config.get("unfulfilled_after_hours", 2))))
         self.schedules = ScheduleService(data, schedule_push=self.dispatcher.schedule_enabled,
                                         adjustment_push=self.dispatcher.adjustment_enabled,
                                         reconciler=self.live_recorder)
@@ -106,6 +116,8 @@ class MyPlugin(Star):
             await self.bili.close()
             raise
         self.login = LoginService(data, self.bili, self.dispatcher.push_login_status)
+        self.profiles = ProfileService(
+            data, self.bili, channel=self.config.get("screenshot_browser_channel", "auto"))
         self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, self.discovery.parser))
         self.discovery.bili = self.bili
         if self.config.get("enable_schedule_processing", False):
@@ -136,6 +148,10 @@ class MyPlugin(Star):
         ):
             self.dynamic_listener_task = asyncio.create_task(
                 self.dynamic_listener.run(), name="vtuber-monitor-dynamic")
+        if self.profile_task is None or self.profile_task.done():
+            # 头像与空间头图每天零点刷新，供周表图片使用。
+            self.profile_task = asyncio.create_task(
+                self.profiles.run(), name="vtuber-monitor-profiles")
 
     @filter.command("vt_ping")
     async def vt_ping(self, event: AstrMessageEvent):
@@ -308,24 +324,49 @@ class MyPlugin(Star):
             if schedule is None:
                 text = (f"未找到 {week_start} 起始的周表。" if week_start else "未找到本周周表。")
                 text += "可用 /vt_schedule_history <UID> 查看缓存周次，或由管理员运行 /vt_parse_schedule <UID>。"
-            else:
-                text = f"周表起始日：{schedule['week_start']}；修订 {schedule.get('revision', 0)}\n"
-                text += "\n\n".join(format_stream(p) for p in schedule["streams"])
-                text += "\n\n" + await self._format_live_summary(uid, schedule["week_start"])
+                yield event.plain_result(text)
+                return
+            summary = await self._live_summary(uid, schedule["week_start"])
+            if self.config.get("schedule_image_enabled", True):
+                try:
+                    view = build_schedule_view(schedule, uid=uid, summary=summary,
+                                               display_name=await self._display_name(uid, event),
+                                               banner=await self.profiles.banner(uid))
+                    path = await self.schedule_renderer.render(view)
+                except Exception:
+                    # 图片只是展示形式，任何渲染问题都不应让周表查询失败。
+                    logger.exception("VTuber schedule image rendering failed")
+                else:
+                    yield event.image_result(path)
+                    return
+            text = f"周表起始日：{schedule['week_start']}；修订 {schedule.get('revision', 0)}\n"
+            text += "\n\n".join(format_stream(p) for p in schedule["streams"])
+            text += "\n\n" + format_live_summary(summary)
             yield event.plain_result(text)
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
-    async def _format_live_summary(self, uid, week_start):
-        """展示已记录与缺失的观测，避免漏记的直播悄无声息。"""
+    async def _live_summary(self, uid, week_start):
+        """已记录与缺失的观测统计；失败时返回 None，由展示层标注统计失败。"""
         try:
-            summary = await self.live_recorder.week_summary(uid, week_start)
+            return await self.live_recorder.week_summary(uid, week_start)
         except Exception:
             logger.exception("VTuber live summary failed")
-            return "实际直播：统计失败。"
-        return (f"实际直播：已记录 {summary['recorded']} 场"
-                f"（突击 {summary['extra']} 场）· 待落位 {summary['pending']} 场"
-                f" · 未记录 {summary['unknown']} 场（起点未知）")
+            return None
+
+    async def _display_name(self, uid, event):
+        """图片标题用主播原名（订阅时记录的 B 站昵称），取不到时退化为 UID。
+
+        别名是给命令用的，图上展示原名更好认人，所以这里不优先取别名。
+        """
+        try:
+            rows = await self.targets.data.get_target_mappings(event.unified_msg_origin, event.get_sender_id())
+            row = next((item for item in rows if item["uid"] == uid), None)
+        except Exception:
+            return f"UID {uid}"
+        if row is None:
+            return f"UID {uid}"
+        return (row.get("name") or "").strip() or f"UID {uid}"
 
     @filter.command("vt_schedule_history")
     async def vt_schedule_history(self, event: AstrMessageEvent, uid: str = ""):
@@ -438,7 +479,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.14\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.15\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"
@@ -451,6 +492,7 @@ class MyPlugin(Star):
             f"\n自动周表处理：{'已开启（依赖动态轮询）' if self.dynamic_listener.discovery else '关闭'}"
             f"；视觉模型：{'已指定' if self.discovery.parser.provider_id else '未指定'}"
             f"\n零点周表检查：{'运行中（北京时间，需先手动解析建立基准）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}"
+            f"\n空间资料：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}"
             f"\n自动调播：{'有本周周表时自动处理' if self.dynamic_listener.adjustment else '关闭'}；模型：{'已指定' if self.adjustment.provider_id else '未指定'}"
             f"\n周表推送：{'开启' if self.dispatcher.schedule_enabled else '关闭'}；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}（依赖动态轮询）"
             f"\n调播任务：{work['adjustment_jobs']}；周表通知：{work['schedule_outbox']}"
@@ -467,7 +509,8 @@ class MyPlugin(Star):
             if self.login is not None:
                 await self.login.close()
             tasks = [task for task in (self.live_listener_task, self.dynamic_listener_task,
-                                       self.schedule_watch_task) if task is not None]
+                                       self.schedule_watch_task, self.profile_task)
+                     if task is not None]
             for task in tasks:
                 task.cancel()
             if tasks:
@@ -476,6 +519,7 @@ class MyPlugin(Star):
             self.live_listener_task = None
             self.dynamic_listener_task = None
             self.schedule_watch_task = None
+            self.profile_task = None
             if self.bili is not None:
                 await self.bili.close()
             self.live_listener = None

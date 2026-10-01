@@ -11,6 +11,24 @@ def china_today():
     return datetime.now(timezone(timedelta(hours=8))).date()
 
 
+def is_pending_title(title):
+    """判断周表标题是不是“内容待定”占位，而不是真实节目名。
+
+    解析提示词要求“只有时间没有内容的直播标题写为直播（内容待定）”，
+    但模型也可能写成“联动（待定）”“待定”等；去掉空白和各类括号后
+    以“待定”结尾即视为占位。真实节目名（如“歌回（待定曲目）”）不会命中。
+    """
+    if not isinstance(title, str):
+        return False
+    text = re.sub(r"[\s()（）\[\]【】〔〕]", "", title)
+    return bool(text) and (text.endswith("待定") or "内容待定" in text)
+
+
+# 排期到了却没开播、且当天没有动态调播的场次。当天之内还可以被迟到的
+# 直播回填撤销，过了当地日期就定稿。
+UNFULFILLED_STATUS = "unfulfilled"
+
+
 def parse_week_override(value, today=None, *, limit_range=True):
     if not value:
         return None
@@ -129,7 +147,8 @@ def validate_schedule(schedule, today=None, allow_history=False):
                 raise ValueError("实际直播时间来源无效。")
         if not isinstance(stream.title, str) or not stream.title.strip() or len(stream.title) > 300:
             raise ValueError("直播标题无效。")
-        if stream.status not in ("scheduled", "postponed", "cancelled", "completed", "unknown"):
+        if stream.status not in ("scheduled", "postponed", "cancelled", "completed", "unknown",
+                                 UNFULFILLED_STATUS):
             raise ValueError("直播状态无效。")
         if stream.source not in ("weekly_image", "dynamic_adjustment", "manual", "live_observation"):
             raise ValueError("直播来源无效。")

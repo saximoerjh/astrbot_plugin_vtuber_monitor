@@ -1,6 +1,6 @@
 """保守匹配：存在歧义的场次一律保留为新增或删除。"""
 from dataclasses import replace
-from .schedule_models import StreamPlan
+from .schedule_models import UNFULFILLED_STATUS, StreamPlan, is_pending_title
 
 
 def align_streams(old, incoming):
@@ -37,6 +37,13 @@ def align_streams(old, incoming):
                                  status=previous.status)
             if previous.actual_intervals and previous.actual_intervals[-1].get("end"):
                 stream = replace(stream, status="completed")
+            if previous.status == UNFULFILLED_STATUS and stream.status == "scheduled":
+                # 未兑现是判定出来的状态，重新解析仍是“已排期”时不能被抹掉，
+                # 否则每次重新解析都会重标一次并产生假的状态变更。
+                stream = replace(stream, status=UNFULFILLED_STATUS)
+            if is_pending_title(stream.title) and not is_pending_title(previous.title):
+                # 上一次已用实测直播标题补全过，重新解析仍是“内容待定”时保留补全结果。
+                stream = replace(stream, title=previous.title)
             changed = any(getattr(stream, key) != match[key]
                           for key in ("date", "start_time", "title", "status")) or stream.original_end_time != match.get("original_end_time")
             stream = replace(stream, id=match["id"], revision=match.get("revision", 0) + int(changed))
@@ -66,7 +73,8 @@ def schedule_diff(before, after):
 
 def format_diff(changes):
     labels = {"added": "新增", "removed": "删除", "time": "时间", "actual": "实际直播", "title": "标题", "status": "状态"}
-    statuses = {"scheduled": "已排期", "postponed": "改期", "cancelled": "取消", "unknown": "待定", "completed": "完成"}
+    statuses = {"scheduled": "已排期", "postponed": "改期", "cancelled": "取消", "unknown": "待定",
+                "completed": "完成", UNFULFILLED_STATUS: "未兑现"}
     def describe(s):
         if s is None:
             return "无"

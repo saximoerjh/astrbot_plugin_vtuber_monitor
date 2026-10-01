@@ -13,12 +13,14 @@ from datetime import datetime, timedelta, timezone
 
 from ..core.data_manager import (LIVE_SESSION_PENDING, LIVE_SESSION_RECORDED,
                                  LIVE_SESSION_SKIPPED)
-from ..core.schedule_models import StreamPlan, WeeklySchedule, validate_schedule
+from ..core.schedule_models import (UNFULFILLED_STATUS, StreamPlan, WeeklySchedule,
+                                    is_pending_title, validate_schedule)
 
 logger = logging.getLogger(__name__)
 
 CHINA = timezone(timedelta(hours=8))
 MATCH_TOLERANCE = timedelta(hours=1)
+UNFULFILLED_AFTER = timedelta(hours=2)
 EXTRA_SOURCE = "live_observation"
 EXTRA_TITLE = "突击直播"
 NO_DELTA = timedelta(0)
@@ -48,17 +50,19 @@ def interval_of(session):
 
 
 class LiveScheduleRecorder:
-    def __init__(self, data, tolerance=MATCH_TOLERANCE):
+    def __init__(self, data, tolerance=MATCH_TOLERANCE, *, unfulfilled_after=UNFULFILLED_AFTER):
         self.data = data
         self.tolerance = tolerance
+        self.unfulfilled_after = unfulfilled_after
         self._lock = asyncio.Lock()
 
-    async def sync(self, uid):
-        """轮询入口：先退役无法落位的记录，再处理待落位的场次。"""
+    async def sync(self, uid, *, now=None):
+        """轮询入口：先退役无法落位的记录，再处理待落位的场次，最后判未兑现。"""
         async with self._lock:
             await self._retire_unknown_starts(uid)
             for week in await self._pending_weeks(uid):
                 await self._place_week(uid, week)
+            await self.mark_unfulfilled(uid, now)
 
     async def reconcile_week(self, uid, week_start):
         """导入入口：为刚刚保存的周表补记此前观测到的场次。"""
@@ -84,7 +88,9 @@ class LiveScheduleRecorder:
         return {"recorded": sum(1 for row in known if row["synced"] == LIVE_SESSION_RECORDED),
                 "pending": sum(1 for row in known if row["synced"] == LIVE_SESSION_PENDING),
                 "extra": sum(1 for row in known if row["id"] in extras),
-                "unknown": len(unknown)}
+                "unknown": len(unknown),
+                "unfulfilled": sum(1 for plan in (schedule or {"streams": ()})["streams"]
+                                   if plan.get("status") == UNFULFILLED_STATUS)}
 
     async def _retire_unknown_starts(self, uid):
         for session in await self.data.live_sessions_for_uid(uid):
@@ -98,6 +104,64 @@ class LiveScheduleRecorder:
             if session["synced"] == LIVE_SESSION_PENDING and session["start_time"]:
                 weeks.add(week_of_session(session))
         return sorted(weeks)
+
+    @staticmethod
+    def awaiting_start(plan):
+        """还没开播、也没被调播或取消的排期场次：未兑现的候选。"""
+        return (plan.get("status") == "scheduled"
+                and plan.get("source") != EXTRA_SOURCE
+                and not plan.get("rescheduled_start_time")
+                and bool(plan.get("start_time"))
+                and not plan.get("actual_intervals"))
+
+    async def mark_unfulfilled(self, uid, now=None):
+        """排期到点后仍没开播的场次记为未兑现。
+
+        只处理「场次自己所在的周」，因为周日 23:00 的场次到点两小时已经跨周，
+        那时它属于上一周的周表。已经在直播轮询里，所以不额外起任务。
+        """
+        now = now or datetime.now(CHINA)
+        today = now.date()
+        marked = 0
+        for week in sorted({week_start_of(today), week_start_of(today - timedelta(days=1))}):
+            schedule = await self.data.get_historical_schedule(uid, week)
+            if schedule is None:
+                continue
+            streams = [dict(plan) for plan in schedule["streams"]]
+            changed = False
+            count = 0
+            for plan in streams:
+                if not self.awaiting_start(plan):
+                    continue
+                planned = self._planned_start(plan)
+                if planned is None or now < planned + self.unfulfilled_after:
+                    continue
+                plan["status"] = UNFULFILLED_STATUS
+                plan["revision"] = plan.get("revision", 0) + 1
+                changed = True
+                count += 1
+            if not changed:
+                continue
+            if await self._save(uid, week, schedule, streams):
+                marked += count
+            # 保存失败说明周表被其他写入方改动，下一轮重新读取后再判。
+        return marked
+
+    def _unfulfilled_candidate(self, streams, session):
+        """当天已被判未兑现、又被迟到的直播回填的场次；取原定时间最近的。"""
+        day = local(session["start_time"]).date().isoformat()
+        started = local(session["start_time"])
+        best = None
+        for plan in streams:
+            if plan.get("status") != UNFULFILLED_STATUS or plan.get("source") == EXTRA_SOURCE:
+                continue
+            if plan["date"] != day:
+                continue
+            planned = self._planned_start(plan)
+            key = (abs(started - planned) if planned else NO_DELTA, plan["id"])
+            if best is None or key < best[0]:
+                best = (key, plan["id"])
+        return best[1] if best else None
 
     async def _week_sessions(self, uid, week_start):
         sessions = []
@@ -155,6 +219,18 @@ class LiveScheduleRecorder:
         if changed:
             plan["actual_intervals"] = intervals
             plan["revision"] = plan.get("revision", 0) + 1
+        if plan.get("status") == UNFULFILLED_STATUS:
+            # 当天迟到的直播回填了这条：撤销未兑现标记，按正常结果记录。
+            plan["status"] = "completed" if session["end_time"] else "scheduled"
+            changed = True
+        observed = (session.get("title") or "").strip()[:300]
+        if observed and is_pending_title(plan.get("title")) and plan.get("title") != observed:
+            # 周表只写了“内容待定”时，用实测到的直播间标题补全；
+            # 周表原本写了真实节目名时不覆盖。
+            plan["title"] = observed
+            if not changed:
+                plan["revision"] = plan.get("revision", 0) + 1
+            changed = True
         if session["end_time"] and plan["status"] != "completed":
             # 已记录的下播时间覆盖周表里的待定状态。
             plan["status"] = "completed"
@@ -186,10 +262,27 @@ class LiveScheduleRecorder:
             if target is None:
                 target = self._nearest(streams, session)
                 if target is None:
+                    # 当天已判未兑现的场次优先被迟到的直播回填，避免同时出现
+                    # 一条“未兑现”和一条“突击直播”。
+                    target = self._unfulfilled_candidate(streams, session)
+                if target is None:
                     target = self._extra_plan(uid, streams, session)
                     by_id[target] = streams[-1]
                 placed[session["id"]] = target
             placement[session["id"]] = target
+            for plan in streams:
+                # 一次观测只能挂在一个场次上：回填周表条目后，先前为同一次
+                # 直播建的突击条目必须交出这条区间，否则同一场直播会同时
+                # 出现「已结束」和「直播中」两条。
+                if plan["id"] == target:
+                    continue
+                intervals = plan.get("actual_intervals") or ()
+                if not any(item["session_id"] == session["id"] for item in intervals):
+                    continue
+                plan["actual_intervals"] = [item for item in intervals
+                                            if item["session_id"] != session["id"]]
+                plan["revision"] = plan.get("revision", 0) + 1
+                changed = True
             changed |= self._apply(by_id[target], session)
         streams = [plan for plan in streams
                    if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")]
