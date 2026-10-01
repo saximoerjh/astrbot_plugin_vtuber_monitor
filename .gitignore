@@ -209,5 +209,8 @@ __marimo__/
 # 本地 agent 指令：只在本机生效，不随仓库分发
 /AGENTS.md
 
+# 开发进度记录：只在本机保留，不随仓库分发
+/PROGRESS.md
+
 # AstrBot 运行期目录：在插件目录里 import astrbot.core 时会就地生成
 data/

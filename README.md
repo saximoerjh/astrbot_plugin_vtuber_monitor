@@ -260,7 +260,7 @@
 uv run --python 3.12 --with httpx --with pytest --with pytest-asyncio --with ruff --with 'qrcode[pil]' pytest -q data/plugins/astrbot_plugin_vtuber_monitor/tests
 ```
 
-测试使用临时 SQLite 数据库、HTTP MockTransport 和 AstrBot 命令桩，不访问真实 Bilibili、不向 QQ 发消息。结果及后续验收见 [PROGRESS.md](PROGRESS.md)。
+测试使用临时 SQLite 数据库、HTTP MockTransport 和 AstrBot 命令桩，不访问真实 Bilibili、不向 QQ 发消息。
 
 另可使用已安装 AstrBot 的 Python 执行 `tests/runtime_smoke.py`，验证真实框架初始化/退出、FunctionTool/ToolSet 构造、调播命令的多词正文参数解析，以及周表图片能否被真实图片组件引用。脚本使用临时目录，不启动后台轮询、不读取现有凭据、不发送消息。
 
