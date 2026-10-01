@@ -32,7 +32,17 @@
 plugin i https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
 ```
 
-周表图片与置顶截图依赖 `playwright`（随插件依赖自动安装）。`screenshot_browser_channel=auto` 优先使用已安装的 Playwright Chromium，Windows 缺少时退回系统 Edge；其他环境可执行 `python -m playwright install chromium`。
+周表图片与置顶截图依赖 `playwright`：Python 包会随插件依赖自动装好，但**浏览器本体不会自动下载**。
+
+> **Linux / macOS 用户在插件安装后必须再跑一次：**
+
+```shell
+python -m playwright install chromium
+```
+
+- **Windows**：`screenshot_browser_channel=auto` 在缺少 Chromium 时退回系统 Edge，通常开箱可用。
+- **Linux / macOS**：一般没有 Edge，`auto` 固定走 Chromium，不装浏览器就渲染不出周表图与截图。
+- **手动指定**：把「截图浏览器」设为 `chromium`、`msedge` 或 `chrome`。
 
 ## ⚙️ 配置
 
