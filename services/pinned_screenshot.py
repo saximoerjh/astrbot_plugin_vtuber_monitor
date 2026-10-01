@@ -7,15 +7,42 @@ from urllib.parse import urlsplit
 from ..bili_client import BiliClient
 
 
+# 手机可读性只看「字号 / 图片宽度」，像素密度只影响清晰度：
+# B 站动态页的卡片列宽固定 632px、正文 15px，比例 2.37% 只是勉强及格，
+# 而 632px 的位图在高分屏上还要被放大一次，所以这里同时提高像素密度与正文字号。
+VIEWPORT_WIDTH = 1280
+DEVICE_SCALE = 2
+FONT_SCALE = 1.2
+BASE_FONT_PX = 15
+TEXT_SELECTORS = (".bili-rich-text", ".bili-rich-text__content",
+                  ".dyn-card-opus__summary", ".dyn-card-opus__title")
+# Chromium 单张截图的高度上限约 16000 物理像素。
+MAX_PIXEL_HEIGHT = 16000
+
+
+def card_style(font_scale=FONT_SCALE):
+    """展开被折叠的正文，并按 font_scale 放大正文字号。"""
+    text = ", ".join(TEXT_SELECTORS)
+    return f"""
+        .dyn-card-opus__summary, .dyn-card-opus__title, .bili-rich-text__content {{
+            max-height: none !important; height: auto !important;
+            -webkit-line-clamp: unset !important; overflow: visible !important;
+            white-space: normal !important;
+        }}
+        {text} {{ font-size: {BASE_FONT_PX * font_scale:g}px !important; line-height: 1.7 !important; }}
+    """
+
+
 class ScreenshotError(Exception):
     """对外显示的安全信息，不含浏览器日志或凭据。"""
 
 
 class PinnedScreenshot:
-    def __init__(self, channel="auto", *, timeout=75):
+    def __init__(self, channel="auto", *, timeout=75, scale=DEVICE_SCALE, font_scale=FONT_SCALE):
         if channel not in ("auto", "chromium", "msedge", "chrome"):
             raise ValueError("截图浏览器请选择 auto、chromium、msedge 或 chrome。")
         self.channel, self.timeout = channel, timeout
+        self.scale, self.font_scale = scale, font_scale
         self._lock = asyncio.Lock()
 
     async def capture(self, post, cookies):
@@ -38,8 +65,9 @@ class PinnedScreenshot:
                 channel = "chromium" if Path(playwright.chromium.executable_path).exists() or sys.platform != "win32" else "msedge"
             browser = await playwright.chromium.launch(channel=channel, headless=True)
             try:
-                context = await browser.new_context(viewport={"width": 1280, "height": 900},
-                                                    device_scale_factor=1, locale="zh-CN", service_workers="block")
+                context = await browser.new_context(viewport={"width": VIEWPORT_WIDTH, "height": 900},
+                                                    device_scale_factor=self.scale,
+                                                    locale="zh-CN", service_workers="block")
                 await context.add_cookies(cookies)
                 async def route_request(route):
                     parts = urlsplit(route.request.url)
@@ -59,13 +87,7 @@ class PinnedScreenshot:
                 card = page.locator(".bili-dyn-item, .opus-detail").first
                 await card.wait_for(state="visible")
             # 展开已知的文本容器，但不改动动态本身的内容。
-                await page.add_style_tag(content="""
-                    .dyn-card-opus__summary, .dyn-card-opus__title, .bili-rich-text__content {
-                        max-height: none !important; height: auto !important;
-                        -webkit-line-clamp: unset !important; overflow: visible !important;
-                        white-space: normal !important;
-                    }
-                """)
+                await page.add_style_tag(content=card_style(self.font_scale))
                 for image in await card.locator("img:visible").all():
                     await image.scroll_into_view_if_needed()
                 await card.evaluate("""async el => {
@@ -90,7 +112,7 @@ class PinnedScreenshot:
                 if expected and expected not in text:
                     raise ScreenshotError("页面正文与接口动态不一致，未发送可能不完整的截图。")
                 box = await card.bounding_box()
-                if not box or box["height"] > 30000:
+                if not box or box["height"] * self.scale > MAX_PIXEL_HEIGHT:
                     raise ScreenshotError("动态过长，无法生成完整截图；请查看动态链接。")
                 if await card.locator("img:visible").evaluate_all("els => els.some(img => !img.complete || !img.naturalWidth)"):
                     raise ScreenshotError("动态页面图片未完整加载，未发送残缺截图。")

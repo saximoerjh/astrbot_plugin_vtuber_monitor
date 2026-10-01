@@ -119,8 +119,8 @@ python -m playwright install chromium
 
 ## ❓ 常见问题
 
-1. **周表图片在手机上偏小？**  
-   版式按"字号占图片宽度约 2%"设计（840px 宽、两行四列、二倍像素密度），这是在不点开的情况下也能看清的取舍；再小就需要改 `services/schedule_renderer.py` 里的版式常量。
+1. **周表图片或动态截图在手机上偏小？**  
+   可读性只取决于「字号 ÷ 图片宽度」，与像素密度无关。周表按"字号占宽度约 2%"设计（840px 宽、两行四列、二倍像素密度）；动态截图按约 2.9% 设计（B 站卡片列宽固定 632px、正文放大到 18px、二倍像素密度）。要再调大就改 `services/schedule_renderer.py`（`BOARD_WIDTH` / `FONT_SCALE`）或 `services/pinned_screenshot.py`（`DEVICE_SCALE` / `FONT_SCALE`），两者都有 `--variants` 预览工具可以直接对比。
 
 2. **周表图片没有头图或头像？**  
    该主播可能没设置空间头图，或抓取失败。素材按 7 天 TTL 刷新，当天失败不会重试；从来没成功获取过时会退回纯文字标题行。原因记录在 `plugin_data/astrbot_plugin_vtuber_monitor/profiles/<UID>/profile.json` 的 `errors` 字段。
@@ -148,6 +148,9 @@ python tests/runtime_smoke.py
 
 # 渲染一张样例周表，检查版式（--live <UID> 会用真实主播抓头像与头图）
 python tests/render_preview.py --live 1512246445
+
+# 用数据库里第一个订阅主播的动态检查截图版式（--variants 额外渲染候选参数）
+python tests/dynamic_preview.py --variants
 ```
 
 运行期数据都在 `plugin_data/astrbot_plugin_vtuber_monitor/`：`monitor.sqlite3`（订阅、周表、实际直播）、`schedule_images/`（周表原图）、`notice_images/`（调播通知附带的动态截图）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存）、`login_qr/`。缓存目录都有上限或按内容哈希去重。
