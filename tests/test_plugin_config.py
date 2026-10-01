@@ -52,6 +52,34 @@ def test_merge_reads_a_flat_legacy_value_before_the_group_migration():
     assert prepare_config(config)["multimodal_provider_id"] == "flat/vision"
 
 
+def test_two_discovery_switches_merge_with_or_semantics():
+    """两个旧开关合成一个：任一为真即开启，两个都关就只有自动调播的范围。"""
+    both_off = {"_grouped_config_migrated": True,
+                "schedule": {"enable_dynamic_polling": False, "enable_schedule_processing": False}}
+    assert prepare_config(both_off)["auto_discover_schedule"] is False
+    only_schedule = {"_grouped_config_migrated": True,
+                     "schedule": {"enable_dynamic_polling": False, "enable_schedule_processing": True}}
+    assert prepare_config(only_schedule)["auto_discover_schedule"] is True
+    only_polling = {"_grouped_config_migrated": True,
+                    "schedule": {"enable_dynamic_polling": True, "enable_schedule_processing": False}}
+    assert prepare_config(only_polling)["auto_discover_schedule"] is True
+
+
+def test_discovery_merge_cleans_old_keys_and_runs_once():
+    config = {"_grouped_config_migrated": True,
+              "schedule": {"enable_dynamic_polling": True, "enable_schedule_processing": True}}
+    flat = prepare_config(config)
+    assert flat["auto_discover_schedule"] is True
+    assert config["_schedule_discovery_merged"] is True
+    assert not any(key in config["schedule"] for key in ("enable_dynamic_polling",
+                                                        "enable_schedule_processing"))
+    # 关闭之后再次读取不会因为旧值残留又变回开启。
+    flat = prepare_config(config)
+    assert flat["auto_discover_schedule"] is True
+    config["schedule"]["auto_discover_schedule"] = False
+    assert prepare_config(config)["auto_discover_schedule"] is False
+
+
 def test_grouped_schema_has_short_labels_and_all_legacy_fields_hidden():
     schema = json.loads((Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
     groups = [value for value in schema.values() if value["type"] == "object"]

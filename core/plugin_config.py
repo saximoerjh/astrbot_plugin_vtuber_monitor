@@ -5,6 +5,28 @@ from pathlib import Path
 
 MERGED_PROVIDER_KEY = "multimodal_provider_id"
 LEGACY_PROVIDER_KEYS = ("schedule_provider_id", "adjustment_provider_id", "greeting_provider_id")
+DISCOVERY_KEY = "auto_discover_schedule"
+LEGACY_DISCOVERY_KEYS = ("enable_dynamic_polling", "enable_schedule_processing")
+
+
+def merge_discovery_switches(config):
+    """把「完整动态轮询」与「动态中发现周表」合成一个开关，只做一次。
+
+    两个旧开关必须同时打开才有意义：一个决定要不要在动态里找周表图，另一个
+    决定找的范围要不要包含还没有周表的主播。任一为真即视为开启新的合并开关，
+    等价于旧配置里"两个都开"的行为。
+    """
+    if config.get("_schedule_discovery_merged", False):
+        return False
+    schedule = config.setdefault("schedule", {})
+    if not schedule.get(DISCOVERY_KEY):
+        if any(schedule.get(key) or config.get(key) for key in LEGACY_DISCOVERY_KEYS):
+            schedule[DISCOVERY_KEY] = True
+    for key in LEGACY_DISCOVERY_KEYS:
+        schedule.pop(key, None)
+        config.pop(key, None)
+    config["_schedule_discovery_merged"] = True
+    return True
 
 
 def merge_provider_selection(config):
@@ -48,6 +70,8 @@ def prepare_config(config):
         if callable(getattr(config, "save_config", None)):
             config.save_config()
     if merge_provider_selection(config) and callable(getattr(config, "save_config", None)):
+        config.save_config()
+    if merge_discovery_switches(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
     flat = {}
     for group, definition in groups.items():

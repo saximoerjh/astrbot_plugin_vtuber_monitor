@@ -34,7 +34,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.16")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.17")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -100,7 +100,10 @@ class MyPlugin(Star):
                 self.config.get("auto_adjustment_with_schedule", True)):
             dynamic_listener.adjustment = self.adjustment
         dynamic_listener.require_schedule = True
-        dynamic_listener.eligible_only = not self.config.get("enable_dynamic_polling", False)
+        discover = bool(self.config.get("auto_discover_schedule", False))
+        # 合并开关：打开时轮询全部特别关注并识别周表图；关闭时只轮询已有本周
+        # 周表的主播，够自动调播用，也避免给消费不掉的队列塞任务。
+        dynamic_listener.eligible_only = not discover
         dynamic_listener.dispatcher = self.dispatcher
         self.discovery = ScheduleDiscovery(
             data, None, ScheduleParser(self.context, self.config.get("multimodal_provider_id", "")),
@@ -122,7 +125,7 @@ class MyPlugin(Star):
             data, self.bili, channel=self.config.get("screenshot_browser_channel", "auto"))
         self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, self.discovery.parser))
         self.discovery.bili = self.bili
-        if self.config.get("enable_schedule_processing", False):
+        if discover:
             dynamic_listener.discovery = self.discovery
         self.subscriptions = SubscriptionService(data, self.bili, dynamic_listener.discovery)
         listener.bili = self.bili
@@ -144,7 +147,7 @@ class MyPlugin(Star):
         ):
             self.live_listener_task = asyncio.create_task(
                 self.live_listener.run(), name="vtuber-monitor-live")
-        if (self.config.get("enable_dynamic_polling", False) or
+        if (self.config.get("auto_discover_schedule", False) or
                 self.config.get("auto_adjustment_with_schedule", True)) and (
             self.dynamic_listener_task is None or self.dynamic_listener_task.done()
         ):
@@ -481,7 +484,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.16\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.17\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"

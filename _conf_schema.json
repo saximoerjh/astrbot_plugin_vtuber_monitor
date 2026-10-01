@@ -104,17 +104,11 @@
     "hint": "进阶选项：默认自动调播已够用，一般无需再开启手动处理开关。",
     "type": "object",
     "items": {
-      "enable_dynamic_polling": {
-        "description": "完整动态轮询",
+      "auto_discover_schedule": {
+        "description": "自动发现周表",
         "type": "bool",
         "default": false,
-        "hint": "轮询所有特别关注。自动调播模式会自行检查有本周周表且有模型的主播。"
-      },
-      "enable_schedule_processing": {
-        "description": "动态中发现周表",
-        "type": "bool",
-        "default": false,
-        "hint": "完整动态轮询时发现周表候选；无视觉模型时仅保存图片。"
+        "hint": "轮询全部特别关注的新动态并识别周表图，包括还没有周表的主播。关闭则只轮询已有本周周表的主播（够自动调播用）。开销随订阅数增长。"
       },
       "enable_adjustment_processing": {
         "description": "手动启用调播处理",
@@ -301,8 +295,14 @@
     "default": false,
     "invisible": true
   },
-  "enable_schedule_processing": {
-    "description": "动态轮询时处理周表候选（需同时开启动态轮询；无视觉模型时仅存图片）",
+  "auto_discover_schedule": {
+    "description": "自动发现周表：轮询全部特别关注的新动态并识别周表图，关闭只轮询已有本周周表的主播",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "_schedule_discovery_merged": {
+    "description": "周表发现开关合并标记",
     "type": "bool",
     "default": false,
     "invisible": true
@@ -324,12 +324,6 @@
     "type": "string",
     "secret": true,
     "default": "",
-    "invisible": true
-  },
-  "enable_dynamic_polling": {
-    "description": "启用特别关注动态轮询（完成联调后开启，修改后重载）",
-    "type": "bool",
-    "default": false,
     "invisible": true
   },
   "dynamic_poll_interval": {

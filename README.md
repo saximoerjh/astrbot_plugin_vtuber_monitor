@@ -237,9 +237,8 @@
 - `live_poll_interval`：默认 120 秒，范围 10–86400；指一轮处理结束后的等待时间。
 - `normal_live_start_push` / `normal_live_end_push`：默认都是 `true`，控制普通关注的上播／下播通知。
 - `special_live_start_push` / `special_live_end_push`：默认上播 `true`、下播 `false`。特别关注的上下播通知独立于普通关注开关，默认只在开播时推送。
-- `enable_dynamic_polling`：默认 `false`，开启后轮询全部特别关注；自动调播模式仅轮询已有本周周表且有模型的特别关注。
+- `auto_discover_schedule`：默认 `false`。开启后轮询**全部**特别关注的新动态并识别其中的周表图，包括还没有周表的主播；关闭时只轮询已有本周周表的主播（够自动调播用），请求量随订阅数少得多。它同时决定要不要在动态里找周表图。
 - `dynamic_poll_interval`：默认 300 秒，范围 30–86400。
-- `enable_schedule_processing`：默认 `false`，启用后动态轮询附带周表候选处理，也会在新建特别关注时尝试加载周表。
 - `multimodal_provider_id`：周表识别、调播判断与凌晨问候共用的多模态模型提供商 ID，留空则只缓存周表图片、不解析不调播，凌晨问候改用固定句式。需要支持图片输入（调播判断还要求工具调用能力）。本机已配置为 `deepseek/deepseek-flash`，确认使用官方接口并实测识别成功。
 - `schedule_keywords`：默认周表、本周、schedule、直播安排、本周安排。
 - `enable_adjustment_processing`：默认 `false`，保留手动开启入口；`auto_adjustment_with_schedule` 默认按本周周表和模型自动启用调播。
