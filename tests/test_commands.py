@@ -171,7 +171,7 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
             await asyncio.Event().wait()
         plugin.dynamic_listener.run = wait_dynamic
         plugin.config["enable_live_polling"] = True
-        plugin.config["auto_discover_schedule"] = True
+        plugin.config["auto_adjustment_with_schedule"] = True
         plugin._start_tasks()
         task = plugin.live_listener_task
         dynamic_task = plugin.dynamic_listener_task

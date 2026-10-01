@@ -24,6 +24,7 @@ from .services.login_service import LoginService
 from .services.schedule_parser import ScheduleParser
 from .services.schedule_service import ScheduleService
 from .services.schedule_discovery import ScheduleDiscovery, DEFAULT_KEYWORDS
+from .services.schedule_watch import DEFAULT_SCAN_TIMES
 from .services.target_service import TargetService
 from .services.pinned_screenshot import PinnedScreenshot
 from .services.pinned_service import PinnedService, forward_chain, message_parts
@@ -34,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.18")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.19")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -99,14 +100,15 @@ class MyPlugin(Star):
         if self.config.get("auto_adjustment_with_schedule", True):
             dynamic_listener.adjustment = self.adjustment
         dynamic_listener.require_schedule = True
-        discover = bool(self.config.get("auto_discover_schedule", False))
-        # 合并开关：打开时轮询全部特别关注并识别周表图；关闭时只轮询已有本周
-        # 周表的主播，够自动调播用，也避免给消费不掉的队列塞任务。
-        dynamic_listener.eligible_only = not discover
+        # 动态轮询只服务自动调播：只轮询已有本周周表、有模型的主播。
+        # 周表的发现与更新由 ScheduleWatch 按时间点扫描负责。
+        dynamic_listener.eligible_only = True
         dynamic_listener.dispatcher = self.dispatcher
         self.discovery = ScheduleDiscovery(
             data, None, ScheduleParser(self.context, self.config.get("multimodal_provider_id", "")),
-            self.schedules, self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)))
+            self.schedules, self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)),
+            scan_times=self.config.get("schedule_scan_times", list(DEFAULT_SCAN_TIMES)),
+            auto_parse_normal=bool(self.config.get("auto_parse_normal_schedule", False)))
         self.bili = BiliClient(
             timeout=float(self.config.get("request_timeout", 10)),
             max_retry=self.config.get("max_retry", 2),
@@ -124,9 +126,7 @@ class MyPlugin(Star):
             data, self.bili, channel=self.config.get("screenshot_browser_channel", "auto"))
         self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, self.discovery.parser))
         self.discovery.bili = self.bili
-        if discover:
-            dynamic_listener.discovery = self.discovery
-        self.subscriptions = SubscriptionService(data, self.bili, dynamic_listener.discovery)
+        self.subscriptions = SubscriptionService(data, self.bili, self.discovery)
         listener.bili = self.bili
         listener.schedule_recorder = self.live_recorder
         self.live_listener = listener
@@ -135,19 +135,18 @@ class MyPlugin(Star):
         self._start_tasks()
 
     def _start_tasks(self):
-        if self.config.get("enable_midnight_schedule_check", True) and (
+        if self.discovery.watch.scan_times and (
             self.schedule_watch_task is None or self.schedule_watch_task.done()
         ):
             self.schedule_watch_task = asyncio.create_task(
-                self.discovery.watch.run(), name="vtuber-monitor-schedule-midnight")
+                self.discovery.watch.run(), name="vtuber-monitor-schedule-scan")
         if (self.config.get("enable_live_polling", False) or
                 self.config.get("auto_special_live", True)) and (
             self.live_listener_task is None or self.live_listener_task.done()
         ):
             self.live_listener_task = asyncio.create_task(
                 self.live_listener.run(), name="vtuber-monitor-live")
-        if (self.config.get("auto_discover_schedule", False) or
-                self.config.get("auto_adjustment_with_schedule", True)) and (
+        if self.config.get("auto_adjustment_with_schedule", True) and (
             self.dynamic_listener_task is None or self.dynamic_listener_task.done()
         ):
             self.dynamic_listener_task = asyncio.create_task(
@@ -483,7 +482,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.18\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.19\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"
@@ -493,9 +492,10 @@ class MyPlugin(Star):
             f"\nSESSDATA：{'已配置（有效性未确认）' if self.bili.has_credentials else '未配置'}"
             f"\n动态监听：{'运行中' if self.dynamic_listener_task and not self.dynamic_listener_task.done() else '未运行'}"
             f"；完成 {self.dynamic_listener.rounds} 轮，新增 {self.dynamic_listener.received} 条，失败 {self.dynamic_listener.failures} 次"
-            f"\n自动周表处理：{'已开启（依赖动态轮询）' if self.dynamic_listener.discovery else '关闭'}"
+            f"\n周表扫描时间：{'、'.join(item.strftime('%H:%M') for item in self.discovery.watch.scan_times) or '未设置（已关闭）'}"
+            f"；普通关注自动解析：{'开启' if self.discovery.watch.auto_parse_normal else '关闭'}"
             f"；视觉模型：{'已指定' if self.discovery.parser.provider_id else '未指定'}"
-            f"\n零点周表检查：{'运行中（北京时间，需先手动解析建立基准）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}"
+            f"\n定时扫描：{'运行中（特别关注自动解析）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}"
             f"\n空间资料：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}"
             f"\n自动调播：{'有本周周表时自动处理' if self.dynamic_listener.adjustment else '关闭'}；模型：{'已指定' if self.adjustment.provider_id else '未指定'}"
             f"\n周表推送：{'开启' if self.dispatcher.schedule_enabled else '关闭'}；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}（依赖动态轮询）"

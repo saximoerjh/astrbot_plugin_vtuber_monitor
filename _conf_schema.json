@@ -16,12 +16,6 @@
         "default": true,
         "hint": "主播发动态说改期、取消或加播时，自动改本周周表。需要主播已有本周周表并选了模型；不用开“完整动态轮询”。"
       },
-      "enable_midnight_schedule_check": {
-        "description": "每日零点检查周表",
-        "type": "bool",
-        "default": true,
-        "hint": "每天 0 点检查周表来源动态有没有更新，发现新图就替换。重载后补查当天。"
-      },
       "multimodal_provider_id": {
         "description": "多模态识别模型",
         "type": "string",
@@ -104,11 +98,17 @@
     "hint": "进阶选项：默认自动调播已够用，一般无需再开启手动处理开关。",
     "type": "object",
     "items": {
-      "auto_discover_schedule": {
-        "description": "自动发现周表",
+      "schedule_scan_times": {
+        "description": "周表扫描时间",
+        "type": "list",
+        "default": ["00:30", "12:30", "20:30"],
+        "hint": "每天在这些北京时间检查置顶和最近几条动态有没有新周表。填 HH:MM，可多个；留空即关闭定时检查。"
+      },
+      "auto_parse_normal_schedule": {
+        "description": "普通关注自动解析周表",
         "type": "bool",
         "default": false,
-        "hint": "轮询全部特别关注的新动态并识别周表图，包括还没有周表的主播。关闭则只轮询已有本周周表的主播（够自动调播用）。开销随订阅数增长。"
+        "hint": "开启后普通关注也会自动解析周表并进入定时检查；关闭时普通关注只有手动解析过才继续检查。"
       },
       "dynamic_poll_interval": {
         "description": "动态检查间隔（秒）",
@@ -217,10 +217,22 @@
     "default": 60,
     "invisible": true
   },
-  "enable_midnight_schedule_check": {
-    "description": "北京时间每日零点检查已手动解析的订阅周表；重载后补查当日，独立于动态轮询",
+  "schedule_scan_times": {
+    "description": "每天检查周表的时间点列表，北京时间 HH:MM；留空关闭定时检查",
+    "type": "list",
+    "default": ["00:30", "12:30", "20:30"],
+    "invisible": true
+  },
+  "auto_parse_normal_schedule": {
+    "description": "普通关注也自动解析周表并进入定时检查；关闭时只有手动解析过的普通关注才继续检查",
     "type": "bool",
-    "default": true,
+    "default": false,
+    "invisible": true
+  },
+  "_scan_times_migrated": {
+    "description": "扫描时间与旧开关的迁移标记",
+    "type": "bool",
+    "default": false,
     "invisible": true
   },
   "schedule_image_enabled": {
@@ -285,12 +297,6 @@
   },
   "_provider_merged": {
     "description": "模型选择合并标记",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "auto_discover_schedule": {
-    "description": "自动发现周表：轮询全部特别关注的新动态并识别周表图，关闭只轮询已有本周周表的主播",
     "type": "bool",
     "default": false,
     "invisible": true

@@ -5,8 +5,10 @@ from pathlib import Path
 
 MERGED_PROVIDER_KEY = "multimodal_provider_id"
 LEGACY_PROVIDER_KEYS = ("schedule_provider_id", "adjustment_provider_id", "greeting_provider_id")
-DISCOVERY_KEY = "auto_discover_schedule"
-LEGACY_DISCOVERY_KEYS = ("enable_dynamic_polling", "enable_schedule_processing")
+DISCOVERY_KEY = "schedule_scan_times"
+LEGACY_DISCOVERY_KEYS = ("enable_dynamic_polling", "enable_schedule_processing",
+                         "auto_discover_schedule")
+MIDNIGHT_KEY = "enable_midnight_schedule_check"
 ADJUSTMENT_KEY = "auto_adjustment_with_schedule"
 LEGACY_ADJUSTMENT_KEY = "enable_adjustment_processing"
 
@@ -36,23 +38,30 @@ def merge_adjustment_switches(config):
     return True
 
 
-def merge_discovery_switches(config):
-    """把「完整动态轮询」与「动态中发现周表」合成一个开关，只做一次。
+def migrate_scan_times(config):
+    """把旧的周表发现开关迁移成扫描时间列表，只做一次。
 
-    两个旧开关必须同时打开才有意义：一个决定要不要在动态里找周表图，另一个
-    决定找的范围要不要包含还没有周表的主播。任一为真即视为开启新的合并开关，
-    等价于旧配置里"两个都开"的行为。
+    - 「每日零点检查周表」显式关过 → 迁移成空列表，保持"不做定时检查"。
+    - 动态轮询/动态中发现周表已被定时扫描取代，旧键直接清掉；
+      特别关注现在总是自动解析，旧开关的语义已被默认行为覆盖。
     """
-    if config.get("_schedule_discovery_merged", False):
+    if config.get("_scan_times_migrated", False):
         return False
+    common = config.setdefault("common", {})
     schedule = config.setdefault("schedule", {})
-    if not schedule.get(DISCOVERY_KEY):
-        if any(schedule.get(key) or config.get(key) for key in LEGACY_DISCOVERY_KEYS):
-            schedule[DISCOVERY_KEY] = True
+    legacy = config.get(MIDNIGHT_KEY)
+    for holder in (common, schedule):
+        if legacy is None:
+            legacy = holder.get(MIDNIGHT_KEY)
+    if legacy is False:
+        schedule[DISCOVERY_KEY] = []
+    common.pop(MIDNIGHT_KEY, None)
+    schedule.pop(MIDNIGHT_KEY, None)
+    config.pop(MIDNIGHT_KEY, None)
     for key in LEGACY_DISCOVERY_KEYS:
         schedule.pop(key, None)
         config.pop(key, None)
-    config["_schedule_discovery_merged"] = True
+    config["_scan_times_migrated"] = True
     return True
 
 
@@ -98,7 +107,7 @@ def prepare_config(config):
             config.save_config()
     if merge_provider_selection(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
-    if merge_discovery_switches(config) and callable(getattr(config, "save_config", None)):
+    if migrate_scan_times(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
     if merge_adjustment_switches(config) and callable(getattr(config, "save_config", None)):
         config.save_config()

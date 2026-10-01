@@ -1,159 +1,187 @@
+"""定时扫描：时间点调度、扫描范围、基准建立与更新落位。"""
 import asyncio
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
-from astrbot_plugin_vtuber_monitor.core.models import DynamicPost
+from astrbot_plugin_vtuber_monitor.core.models import DynamicPost, FollowLevel, VtuberState
 from astrbot_plugin_vtuber_monitor.core.schedule_models import china_today, schedule_from_parser
 from astrbot_plugin_vtuber_monitor.services.schedule_service import ScheduleService
-from astrbot_plugin_vtuber_monitor.services.schedule_watch import ScheduleWatch, monday, snapshot
+from astrbot_plugin_vtuber_monitor.services.schedule_watch import (
+    CHINA, ScheduleWatch, latest_due_slot, monday, next_scan_at, parse_scan_times)
+
+TIMES = ["00:30", "12:30", "20:30"]
+URL = "https://i0.hdslb.com/week.png"
 
 
-async def setup(tmp_path, offset=-1):
+def at(day, clock):
+    hour, minute = (int(part) for part in clock.split(":"))
+    return datetime.combine(day, time(hour, minute), CHINA)
+
+
+async def setup(tmp_path, *, offset=-1, remember=True, times=TIMES, auto_parse_normal=False):
     data = DataManager(tmp_path)
     await data.initialize()
-    current = monday(china_today())
-    start = current + timedelta(weeks=offset)
-    url = "https://i0.hdslb.com/week.png"
-    post = DynamicPost(1, "100", "周表", 1, (url,), True)
+    start = monday(china_today()) + timedelta(weeks=offset)
+    post = DynamicPost(1, "100", "周表", 1, (URL,), True)
+
     def parsed(week, title="直播"):
-        return replace(schedule_from_parser(1, {"week_start": week.isoformat(), "streams": [
-            {"date": week.isoformat(), "start_time": "20:00", "title": title}]}, allow_history=True),
-            source_dynamic_id="100", source_image_url=url)
-    parser = SimpleNamespace(parse=AsyncMock(return_value=parsed(start + timedelta(days=7))),
-                             is_schedule_image=AsyncMock(return_value=True))
-    bili = SimpleNamespace(get_dynamic=AsyncMock(return_value=post),
+        payload = {"week_start": week.isoformat(),
+                   "streams": [{"date": week.isoformat(), "start_time": "20:00", "title": title}]}
+        return replace(schedule_from_parser(1, payload, allow_history=True),
+                       source_dynamic_id="100", source_image_url=URL)
+
+    parser = SimpleNamespace(
+        provider_id="vision",
+        parse=AsyncMock(return_value=parsed(start + timedelta(days=7))),
+        is_schedule_image=AsyncMock(return_value=True))
+    bili = SimpleNamespace(get_latest_dynamics=AsyncMock(return_value=[post]),
                            download_image=AsyncMock(return_value=b"\x89PNGnew"))
     service = ScheduleService(data)
-    discovery = SimpleNamespace(data=data, parser=parser, bili=bili, schedules=service, _lock=asyncio.Lock())
-    watch = ScheduleWatch(discovery)
+    discovery = SimpleNamespace(
+        data=data, parser=parser, bili=bili, schedules=service, _lock=asyncio.Lock(),
+        is_candidate=lambda item: bool(item.images) and (item.is_pinned or "周表" in item.text))
+    watch = ScheduleWatch(discovery, scan_times=times, auto_parse_normal=auto_parse_normal)
     initial = parsed(start)
     await service.store_parsed_schedule(initial)
-    await watch.remember(post, initial, b"\x89PNGold")
-    return watch, discovery, current, parsed
+    if remember:
+        await watch.remember(post, initial, b"\x89PNGold")
+    return watch, discovery, start, parsed
+
+
+def test_scan_times_and_slots():
+    times = parse_scan_times(["20:30", "00:30", "12:30", "00:30"])
+    assert [item.strftime("%H:%M") for item in times] == ["00:30", "12:30", "20:30"]
+    assert parse_scan_times([]) == ()
+    for bad in ("25:00", "1:2", "", None if False else "abc"):
+        with pytest.raises(ValueError):
+            parse_scan_times([bad])
+    assert latest_due_slot(at(china_today(), "00:10"), times) is None
+    assert latest_due_slot(at(china_today(), "13:00"), times) == f"{china_today().isoformat()}T12:30"
+    assert next_scan_at(at(china_today(), "13:00"), times) == at(china_today(), "20:30")
+    assert next_scan_at(at(china_today(), "23:00"), times) == at(china_today() + timedelta(days=1), "00:30")
+    assert next_scan_at(at(china_today(), "13:00"), ()) is None
+
+
+def test_select_posts_keeps_pinned_first_and_limits_recent():
+    discovery = SimpleNamespace(data=None, is_candidate=lambda item: bool(item.images))
+    watch = ScheduleWatch(discovery, scan_times=TIMES)
+    posts = [DynamicPost(1, str(index), "x", index, (URL,), index == 3) for index in range(1, 10)]
+    selected = watch.select_posts(posts)
+    assert [item.id for item in selected] == ["3", "9", "8", "7", "6"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("offset", [-1, 0])
-async def test_anchor_advances_exactly_one_week_and_restart_deduplicates(tmp_path, offset):
-    watch, d, day, parsed = await setup(tmp_path, offset)
-    await watch.check(1, day)
-    expected = (day + timedelta(weeks=offset + 1)).isoformat()
-    assert d.parser.parse.call_args.kwargs["week_start"] == expected
+async def test_scan_runs_once_per_slot_and_not_before_the_first_slot(tmp_path):
+    watch, d, day, _ = await setup(tmp_path)
+    await watch.check(1, now=at(day, "00:10"))
+    assert d.bili.get_latest_dynamics.await_count == 0
+    await watch.check(1, now=at(day, "12:45"))
+    assert d.bili.get_latest_dynamics.await_count == 1
+    # 同一个时间点不重复扫描，重启（新建 watch）也一样。
+    await watch.check(1, now=at(day, "13:00"))
+    await ScheduleWatch(d, scan_times=TIMES).check(1, now=at(day, "13:30"))
+    assert d.bili.get_latest_dynamics.await_count == 1
+    await watch.check(1, now=at(day, "20:45"))
+    assert d.bili.get_latest_dynamics.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_special_without_baseline_scans_but_normal_waits_for_manual(tmp_path):
+    watch, d, day, _ = await setup(tmp_path, remember=False)
+    d.scan = AsyncMock()
+    await watch.check(1, now=at(day, "12:45"), special=True)
+    d.scan.assert_awaited_once_with(1)
+    d.scan.reset_mock()
+    await watch.check(2, now=at(day, "12:45"), special=False)
+    d.scan.assert_not_awaited()
+    # 开了普通关注自动解析后同样会扫描。
+    watch.auto_parse_normal = True
+    await watch.check(2, now=at(day, "12:45"), special=False)
+    d.scan.assert_awaited_once_with(2)
+
+
+@pytest.mark.asyncio
+async def test_changed_image_advances_the_week(tmp_path):
+    watch, d, start, _ = await setup(tmp_path)
+    await watch.check(1, now=at(start, "12:45"))
+    # 上周周表发现新图 → 落位到下一周（本周）。
+    expected = (start + timedelta(days=7)).isoformat()
+    assert d.parser.parse.await_args.kwargs["week_start"] == expected
     state = await d.data.get_schedule_tracking(1)
-    assert state["week"] == expected
-    assert state["anchor_week"] == (day + timedelta(weeks=offset)).isoformat()
+    assert state["week"] == expected and state["pending"] is None
     assert await d.data.get_historical_schedule(1, expected)
-    await ScheduleWatch(d).check(1, day)
-    assert d.bili.get_dynamic.await_count == 1
-    await watch.check(1, day + timedelta(days=1))
-    assert d.parser.parse.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_second_update_uses_llm_and_can_keep_same_week(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
-    await watch.check(1, day)
+async def test_second_change_in_the_same_week_uses_update_context(tmp_path):
+    watch, d, start, parsed = await setup(tmp_path)
+    await watch.check(1, now=at(start, "12:45"))
     d.bili.download_image.return_value = b"\x89PNGsecond"
-    d.parser.parse.return_value = parsed(day, "修订")
-    await watch.check(1, day + timedelta(days=1))
-    options = d.parser.parse.call_args.kwargs
+    current = start + timedelta(days=7)
+    d.parser.parse.return_value = parsed(current, "修订")
+    await watch.check(1, now=at(start, "20:45"))
+    options = d.parser.parse.await_args.kwargs
     assert "week_start" not in options
     assert options["update_context"]["updates_this_week"] == 2
-    assert (await d.data.get_schedule_tracking(1))["week"] == day.isoformat()
-    assert (await d.data.get_historical_schedule(1, day.isoformat()))["streams"][0]["title"] == "修订"
+    stored = await d.data.get_historical_schedule(1, current.isoformat())
+    assert stored["streams"][0]["title"] == "修订"
 
 
 @pytest.mark.asyncio
-async def test_failure_retains_anchor_and_retries_same_observation(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
+async def test_failed_parse_keeps_baseline_and_retries_next_slot(tmp_path):
+    watch, d, start, _ = await setup(tmp_path)
     d.parser.parse.side_effect = ValueError("ambiguous")
-    await watch.check(1, day)
+    await watch.check(1, now=at(start, "12:45"))
     state = await d.data.get_schedule_tracking(1)
-    assert state["pending"] and state["week"] == state["anchor_week"]
+    assert state["error"] and state["week"] == start.isoformat()
+    kept = await d.data.get_historical_schedule(1, start.isoformat())
+    assert kept["streams"][0]["title"] == "直播"
     d.parser.parse.side_effect = None
-    await ScheduleWatch(d).check(1, day + timedelta(days=1))
+    await watch.check(1, now=at(start, "20:45"))
+    assert (await d.data.get_schedule_tracking(1))["pending"] is None
+
+
+@pytest.mark.asyncio
+async def test_non_schedule_image_is_classified_once(tmp_path):
+    watch, d, day, _ = await setup(tmp_path)
+    other = DynamicPost(1, "101", "周表补充", 2, ("https://i0.hdslb.com/art.png",), False)
+    d.bili.get_latest_dynamics.return_value = [d.bili.get_latest_dynamics.return_value[0], other]
+    d.bili.download_image.side_effect = lambda url: b"\x89PNGold" if url == URL else b"\x89PNGart"
+    d.parser.is_schedule_image.return_value = False
+    await watch.check(1, now=at(day, "12:45"))
+    assert d.parser.is_schedule_image.await_count == 1
+    assert (await d.data.get_schedule_candidates(1))[0]["status"] == "skipped"
+    # 下一个时间点：已判定过的图不再下载也不再分类。
+    await watch.check(1, now=at(day, "20:45"))
+    assert d.parser.is_schedule_image.await_count == 1
+    assert d.bili.download_image.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_new_weekly_image_in_a_recent_post_is_adopted(tmp_path):
+    watch, d, day, _ = await setup(tmp_path)
+    fresh = DynamicPost(1, "102", "本周周表", 3, ("https://i0.hdslb.com/new-week.png",), False)
+    d.bili.get_latest_dynamics.return_value = [d.bili.get_latest_dynamics.return_value[0], fresh]
+    d.bili.download_image.side_effect = lambda url: b"\x89PNGold" if url == URL else b"\x89PNGweek"
+    await watch.check(1, now=at(day, "12:45"))
     state = await d.data.get_schedule_tracking(1)
-    assert state["pending"] is None and len(state["observations"]) == 1
-    assert state["week"] == day.isoformat()
+    assert state["dynamic_id"] == "102" and state["image_url"].endswith("new-week.png")
 
 
 @pytest.mark.asyncio
-async def test_crash_after_import_reuses_parsed_result(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
-    original = d.schedules.store_parsed_schedule
-    async def crash(*args, **kwargs):
-        await original(*args, **kwargs)
-        raise asyncio.CancelledError()
-    d.schedules.store_parsed_schedule = crash
-    with pytest.raises(asyncio.CancelledError):
-        await watch.check(1, day)
-    assert (await d.data.get_schedule_tracking(1))["pending"]["parsed"]
-    d.schedules.store_parsed_schedule = original
-    await ScheduleWatch(d).check(1, day)
-    assert d.parser.parse.await_count == 1
-    assert (await d.data.get_schedule_tracking(1))["week"] == day.isoformat()
-    history = await d.data.get_schedule_history(1)
-    assert next(r for r in history if r["week_start"] == day.isoformat())["versions"] == 1
-
-
-@pytest.mark.asyncio
-async def test_no_anchor_no_request_and_unsubscribed_not_polled(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
-    await watch.check(2, day)
-    await watch.run_once()
-    d.bili.get_dynamic.assert_not_awaited()
-
-
-def test_fingerprint_ignores_prose_but_detects_dates_and_image_bytes():
-    assert snapshot(b"img", "周表9.21-9.27") == snapshot(b"img", "周表9.21-9.27 谢谢")
-    assert snapshot(b"img", "9.21-9.27") != snapshot(b"img", "9.28-10.4")
-    assert snapshot(b"old", "周表") != snapshot(b"new", "周表")
-    assert monday(date(2027, 1, 1)) == date(2026, 12, 28)
-
-
-@pytest.mark.asyncio
-async def test_images_are_immutable_between_versions(tmp_path):
-    from pathlib import Path
-    data = DataManager(tmp_path)
-    await data.initialize()
-    first = await data.save_schedule_image(1, "100", "same-url", b"\x89PNGold")
-    second = await data.save_schedule_image(1, "100", "same-url", b"\x89PNGnew")
-    assert first != second
-    assert Path(first).read_bytes() == b"\x89PNGold"
-
-
-@pytest.mark.asyncio
-async def test_text_date_changes_trigger_import_even_if_bytes_unchanged(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
-    d.bili.download_image.return_value = b"\x89PNGold"
-    d.bili.get_dynamic.return_value = replace(d.bili.get_dynamic.return_value, text="周表9.28-10.4")
-    await watch.check(1, day)
-    d.parser.parse.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_new_calendar_week_resets_multiple_update_rule(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
-    await watch.check(1, day)
-    d.bili.download_image.return_value = b"\x89PNGnext-week"
-    d.parser.parse.return_value = parsed(day + timedelta(days=7))
-    await watch.check(1, day + timedelta(days=7))
-    assert d.parser.parse.call_args.kwargs["week_start"] == (day + timedelta(days=7)).isoformat()
-    assert len((await d.data.get_schedule_tracking(1))["observations"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_multiple_update_ambiguous_keeps_saved_schedule(tmp_path):
-    watch, d, day, parsed = await setup(tmp_path)
-    await watch.check(1, day)
-    previous = await d.data.get_historical_schedule(1, day.isoformat())
-    d.bili.download_image.return_value = b"\x89PNGsecond"
-    d.parser.parse.side_effect = ValueError("needs_date")
-    await watch.check(1, day + timedelta(days=1))
-    assert await d.data.get_historical_schedule(1, day.isoformat()) == previous
-    assert (await d.data.get_schedule_tracking(1))["pending"]["multiple"]
+async def test_run_once_covers_specials_and_only_manually_parsed_normals(tmp_path):
+    watch, d, start, parsed = await setup(tmp_path, remember=False)
+    await d.data.add_subscription(VtuberState(1, "特别", 10), "a", FollowLevel.SPECIAL)
+    await d.data.add_subscription(VtuberState(2, "普通", 11), "a")
+    await d.data.add_subscription(VtuberState(3, "已解析", 12), "a")
+    # 3 号是普通关注，但手动解析过（有基准）→ 也要检查。
+    await watch.remember(DynamicPost(3, "300", "周表", 1, (URL,), True), parsed(start), b"\x89PNGold")
+    d.scan = AsyncMock()
+    d.bili.get_latest_dynamics = AsyncMock(return_value=[])
+    await watch.run_once(now=at(start, "12:45"))
+    assert [call.args[0] for call in d.scan.await_args_list] == [1]

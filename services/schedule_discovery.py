@@ -8,19 +8,23 @@ from dataclasses import replace
 from ..core.models import utc_now, validate_uid
 from ..core.schedule_models import china_today, explicit_week_hint, parse_week_override
 from .schedule_parser import ScheduleParseError
-from .schedule_watch import ScheduleWatch
+from .schedule_watch import DEFAULT_SCAN_TIMES, ScheduleWatch
 
 DEFAULT_KEYWORDS = ("周表", "本周", "schedule", "直播安排", "本周安排")
 
 
 class ScheduleDiscovery:
-    def __init__(self, data, bili, parser, schedules, keywords=DEFAULT_KEYWORDS):
+    def __init__(self, data, bili, parser, schedules, keywords=DEFAULT_KEYWORDS, *,
+                 scan_times=None, auto_parse_normal=False):
         if not isinstance(keywords, (list, tuple)) or any(not isinstance(k, str) or not k.strip() for k in keywords):
             raise ValueError("schedule_keywords 必须为非空字符串列表。")
         self.keywords = tuple(k.casefold() for k in keywords)
         self.data, self.bili, self.parser, self.schedules = data, bili, parser, schedules
         self._lock = asyncio.Lock()
-        self.watch = ScheduleWatch(self)
+        # 空列表是"关闭定时检查"的合法配置，不能当成未设置。
+        self.watch = ScheduleWatch(self,
+                                   scan_times=DEFAULT_SCAN_TIMES if scan_times is None else scan_times,
+                                   auto_parse_normal=auto_parse_normal)
 
     def is_candidate(self, post):
         return bool(post.images) and (post.is_pinned or any(k in post.text.casefold() for k in self.keywords))
@@ -39,9 +43,6 @@ class ScheduleDiscovery:
             tracking = await self.data.get_schedule_tracking(uid)
             # 扫描整页，包括动态水位线之外的旧置顶动态。
             for post in sorted(posts, key=lambda p: int(p.id), reverse=True):
-                if not force and tracking and tracking["dynamic_id"] == post.id:
-                    # 已锚定的来源动态由零点检查负责更新。
-                    continue
                 if not self.is_candidate(post):
                     continue
                 for image_index, url in enumerate(post.images, 1):
@@ -85,7 +86,9 @@ class ScheduleDiscovery:
                             import_key = f"{post.id}:{url}:{fingerprint}:{hashlib.sha256(raw).hexdigest()}"
                             record["status"] = await self.schedules.store_parsed_schedule(schedule, import_key=import_key)
                             record["week_start"] = schedule.week_start
-                            if force and not remembered:
+                            # 任何一次成功解析都更新定时检查的基准，
+                            # 这样订阅时扫描、手动解析都会自动进入定时检查。
+                            if not remembered:
                                 await self.watch.remember(post, schedule, raw)
                                 remembered = True
                         record.pop("error_stage", None)

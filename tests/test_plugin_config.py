@@ -52,32 +52,31 @@ def test_merge_reads_a_flat_legacy_value_before_the_group_migration():
     assert prepare_config(config)["multimodal_provider_id"] == "flat/vision"
 
 
-def test_two_discovery_switches_merge_with_or_semantics():
-    """两个旧开关合成一个：任一为真即开启，两个都关就只有自动调播的范围。"""
-    both_off = {"_grouped_config_migrated": True,
-                "schedule": {"enable_dynamic_polling": False, "enable_schedule_processing": False}}
-    assert prepare_config(both_off)["auto_discover_schedule"] is False
-    only_schedule = {"_grouped_config_migrated": True,
-                     "schedule": {"enable_dynamic_polling": False, "enable_schedule_processing": True}}
-    assert prepare_config(only_schedule)["auto_discover_schedule"] is True
-    only_polling = {"_grouped_config_migrated": True,
-                    "schedule": {"enable_dynamic_polling": True, "enable_schedule_processing": False}}
-    assert prepare_config(only_polling)["auto_discover_schedule"] is True
-
-
-def test_discovery_merge_cleans_old_keys_and_runs_once():
+def test_scan_times_replace_the_midnight_switch_and_clean_old_keys():
+    """旧的"每日零点检查"与两个发现开关都换成扫描时间列表。"""
     config = {"_grouped_config_migrated": True,
+              "common": {"enable_midnight_schedule_check": True},
               "schedule": {"enable_dynamic_polling": True, "enable_schedule_processing": True}}
     flat = prepare_config(config)
-    assert flat["auto_discover_schedule"] is True
-    assert config["_schedule_discovery_merged"] is True
-    assert not any(key in config["schedule"] for key in ("enable_dynamic_polling",
-                                                        "enable_schedule_processing"))
-    # 关闭之后再次读取不会因为旧值残留又变回开启。
-    flat = prepare_config(config)
-    assert flat["auto_discover_schedule"] is True
-    config["schedule"]["auto_discover_schedule"] = False
-    assert prepare_config(config)["auto_discover_schedule"] is False
+    assert flat["schedule_scan_times"] == ["00:30", "12:30", "20:30"]
+    assert config["_scan_times_migrated"] is True
+    for holder in (config["common"], config["schedule"]):
+        assert not any(key in holder for key in (
+            "enable_midnight_schedule_check", "enable_dynamic_polling",
+            "enable_schedule_processing", "auto_discover_schedule"))
+    assert not any(key in config for key in (
+        "enable_midnight_schedule_check", "enable_dynamic_polling",
+        "enable_schedule_processing", "auto_discover_schedule"))
+    # 新键不受影响，二次读取不会因为旧值残留又变化。
+    config["schedule"]["schedule_scan_times"] = ["08:00"]
+    assert prepare_config(config)["schedule_scan_times"] == ["08:00"]
+
+
+def test_midnight_switch_off_migrates_to_an_empty_time_list():
+    config = {"_grouped_config_migrated": True,
+              "common": {"enable_midnight_schedule_check": False},
+              "schedule": {}}
+    assert prepare_config(config)["schedule_scan_times"] == []
 
 
 def test_manual_adjustment_switch_merges_into_auto_adjustment():
