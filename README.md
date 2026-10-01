@@ -233,6 +233,7 @@
 配置 `request_timeout`（默认 10 秒）与 `max_retry`（默认重试 2 次）。网络错误、412/429/5xx、部分风控错误和响应格式错误采用有界指数退避；登录失效或其他不可重试错误直接报告。卸载插件时关闭 HTTP 客户端。
 
 - `enable_live_polling`：默认 `false`，开启后监听全部订阅；特别关注默认由 `auto_special_live` 自动监听。
+- `auto_special_live`：默认 `true`，特别关注的**采集开关**（不是通知开关）——决定是否轮询特别关注的上下播。关闭后不再记录实际直播，实际落位、未兑现判定、迟到与时长统计会一并停止；是否推送消息由「通知内容」里的开关单独控制。
 - `live_poll_interval`：默认 120 秒，范围 10–86400；指一轮处理结束后的等待时间。
 - `normal_live_start_push` / `normal_live_end_push`：默认都是 `true`，控制普通关注的上播／下播通知。
 - `special_live_start_push` / `special_live_end_push`：默认上播 `true`、下播 `false`。特别关注的上下播通知独立于普通关注开关，默认只在开播时推送。
@@ -249,6 +250,8 @@
 - `screenshot_browser_channel`：默认 `auto`，置顶动态截图与周表图片共用的浏览器通道，可选 `chromium`、`msedge`、`chrome`。
 
 特别关注的上下播通知不受普通关注开关影响，由 `special_live_start_push`／`special_live_end_push` 单独控制。两种轮询独立取消。
+
+**「监听」和「通知」是两件事**：`auto_special_live` / `enable_live_polling` 决定要不要去采集（采集影响实际直播记录、落位、未兑现与统计），`notifications` 组里的开关只决定观测到之后要不要发消息；关掉通知不影响记录与统计，关掉采集则所有通知都不会触发。另外周表更新与调播通知走的是动态轮询这条独立链路，不受采集开关影响。
 
 配置修改后重载插件。V0.1 数据库会自动补充 `last_live_change_at` 字段，保留原订阅和状态。
 

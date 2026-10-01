@@ -8,7 +8,7 @@
         "description": "监听特别关注",
         "type": "bool",
         "default": true,
-        "hint": "自动监听特别关注的上下播，用于上下播通知、实际直播落位与统计；关闭后不再记录实际直播。"
+        "hint": "采集开关：决定是否轮询特别关注的上下播。关闭后不再记录实际直播，实际落位、未兑现、迟到与时长统计一并停止；发不发通知由“通知内容”单独控制。"
       },
       "auto_adjustment_with_schedule": {
         "description": "有周表时自动调播",
@@ -33,32 +33,32 @@
   },
   "notifications": {
     "description": "通知内容",
-    "hint": "直播标题和封面会随开播通知发送。",
+    "hint": "只决定是否发送消息，不影响实际直播的记录、落位与统计；是否轮询由“直播监听”和“监听特别关注”决定。",
     "type": "object",
     "items": {
       "normal_live_start_push": {
         "description": "普通关注上播通知",
         "type": "bool",
         "default": true,
-        "hint": "需要开启“同时监听普通关注”。"
+        "hint": "需要先开启“同时监听普通关注”；直播标题和封面会随这条一起发送。"
       },
       "normal_live_end_push": {
         "description": "普通关注下播通知",
         "type": "bool",
         "default": true,
-        "hint": "需要开启“同时监听普通关注”。"
+        "hint": "需要先开启“同时监听普通关注”；与上播通知各自独立。"
       },
       "special_live_start_push": {
         "description": "特别关注上播通知",
         "type": "bool",
         "default": true,
-        "hint": "特别关注上下播通知独立于普通关注，默认只推上播。"
+        "hint": "需要先开启“监听特别关注”或“同时监听普通关注”；与下播通知各自独立，不受普通关注开关影响。"
       },
       "special_live_end_push": {
         "description": "特别关注下播通知",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭。打开后特别关注每次下播也会推送。"
+        "hint": "默认关闭；打开后特别关注每次下播也会推送。需要先开启“监听特别关注”或“同时监听普通关注”。"
       },
       "enable_schedule_push": {
         "description": "周表更新通知",
