@@ -173,7 +173,9 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         plugin.screenshot = AsyncMock()
         plugin.screenshot.capture = AsyncMock(return_value=b"\x89PNGshot")
         monkeypatch.setattr(main, "image_then_text", lambda raw, text: ("image", text))
-        assert [x async for x in plugin.vt_latest(event, "小路")] == [("image", "https://t.bilibili.com/100")]
+        # 两条消息：第一条只有截图，第二条只有链接。
+        assert [x async for x in plugin.vt_latest(event, "小路")] == [
+            ("image", ""), "https://t.bilibili.com/100"]
         plugin.screenshot.capture.side_effect = RuntimeError("browser down")
         fallback = [x async for x in plugin.vt_latest(event, "小路")]
         assert "动态截图未生成" in fallback[0] and "https://t.bilibili.com/100" in fallback[0]

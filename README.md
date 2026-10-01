@@ -82,7 +82,7 @@ python -m playwright install chromium
 | **vt_schedule_history** | `<UID或别名>` | 列出已缓存的周次 | 所有人 |
 | **vt_revisions** | `<UID或别名>` | 查看最近十次周表修订 | 所有人 |
 | **vt_live** | `<UID或别名>` | 查询直播状态，不触发通知 | 所有人 |
-| **vt_latest** | `<UID或别名>` | 查询最新动态的卡片截图，不修改检查点 | 所有人 |
+| **vt_latest** | `<UID或别名>` | 发两条：最新动态截图 + 动态链接，不修改检查点 | 所有人 |
 | **vt_pinned** | `<UID或别名>` | 合并转发置顶动态截图与周表图 | 所有人 |
 | **vt_4016** | (无) | 看看现在哪个国家是凌晨四点 | 所有人 |
 | **vt_status** | (无) | 查看监听状态与计数 | 所有人 |
@@ -120,7 +120,7 @@ python -m playwright install chromium
 ## ❓ 常见问题
 
 1. **周表图片或动态截图在手机上偏小？**  
-   可读性只取决于「字号 ÷ 图片宽度」，与像素密度无关。周表按"字号占宽度约 2%"设计（840px 宽、两行四列、二倍像素密度）；动态截图按约 3.3% 设计（B 站卡片列宽固定 632px、卡片内字号统一放大 1.4 倍到 21px、二倍像素密度）。要再调大就改 `services/schedule_renderer.py`（`BOARD_WIDTH` / `FONT_SCALE`）或 `services/pinned_screenshot.py`（`DEVICE_SCALE` / `FONT_SCALE`），两者都有 `--variants` 预览工具可以直接对比。
+   可读性只取决于「字号 ÷ 图片宽度」，与像素密度无关；但手机常按图片的原始宽度排，1x 出图会被当缩略图。周表按"字号占宽度约 2%"设计（840px 宽、两行四列、二倍像素密度）；动态截图保留 B 站自己的字号（卡片列宽固定 632px、正文 15px），靠二倍像素密度铺满聊天宽度。要再调大就改 `services/schedule_renderer.py`（`BOARD_WIDTH` / `FONT_SCALE`）或 `services/pinned_screenshot.py`（`DEVICE_SCALE` / `FONT_SCALE`，后者大于 1 会把卡片内字号整体放大），两者都有 `--variants` 预览工具可以直接对比。
 
 2. **周表图片没有头图或头像？**  
    该主播可能没设置空间头图，或抓取失败。素材按 7 天 TTL 刷新，当天失败不会重试；从来没成功获取过时会退回纯文字标题行。原因记录在 `plugin_data/astrbot_plugin_vtuber_monitor/profiles/<UID>/profile.json` 的 `errors` 字段。

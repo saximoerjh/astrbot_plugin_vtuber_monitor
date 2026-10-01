@@ -8,12 +8,13 @@ from ..bili_client import BiliClient
 
 
 # 手机可读性只看「字号 / 图片宽度」，像素密度只影响清晰度：
-# B 站动态页的卡片列宽固定 632px、正文 15px，比例 2.37% 只是勉强及格，
-# 而 632px 的位图在高分屏上还要被放大一次，所以这里同时提高像素密度与正文字号。
+# B 站动态页的卡片列宽固定 632px、正文 15px，1x 出图只有 632px 宽，
+# 在手机上会按原始尺寸当缩略图排，所以像素密度固定提到 2 倍（出图 1264px，铺满聊天宽度）。
+# FONT_SCALE 默认 1.0 = 保留站点自己的字号；调大它会把卡片内所有字号按同一倍率放大，
+# 供手机上"不想点开也要看清"时使用。
 VIEWPORT_WIDTH = 1280
 DEVICE_SCALE = 2
-FONT_SCALE = 1.4
-BASE_FONT_PX = 15
+FONT_SCALE = 1.0
 # Chromium 单张截图的高度上限约 16000 物理像素。
 MAX_PIXEL_HEIGHT = 16000
 
@@ -103,9 +104,10 @@ class PinnedScreenshot:
                     raise ScreenshotError("动态页面返回错误或风控，未获得完整截图。")
                 card = page.locator(".bili-dyn-item, .opus-detail").first
                 await card.wait_for(state="visible")
-            # 展开已知的文本容器，再按同一倍率放大字号，但不改动动态内容本身。
+            # 展开已知的文本容器；字号默认保持站点原样，只有调大 FONT_SCALE 时才改写。
                 await page.add_style_tag(content=card_style())
-                await card.evaluate(card_script(), self.font_scale)
+                if self.font_scale != 1:
+                    await card.evaluate(card_script(), self.font_scale)
                 for image in await card.locator("img:visible").all():
                     await image.scroll_into_view_if_needed()
                 await card.evaluate("""async el => {

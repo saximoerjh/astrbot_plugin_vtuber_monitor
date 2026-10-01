@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.27")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.28")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -283,7 +283,9 @@ class MyPlugin(Star):
                 logger.warning("Latest dynamic screenshot failed uid=%s", uid)
                 raw = None
             if raw:
-                yield event.chain_result(image_then_text(raw, link))
+                # 两条消息：第一条只有截图，第二条只有链接。
+                yield event.chain_result(image_then_text(raw, ""))
+                yield event.plain_result(link)
             else:
                 text = f"{post.text[:1000] or '（无正文）'}\n{link}"
                 yield event.plain_result(f"动态截图未生成，以下为正文：\n{text}")
@@ -505,7 +507,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
-        lines = ["VTuber Monitor 0.7.27"]
+        lines = ["VTuber Monitor 0.7.28"]
         if listener is None:
             lines.append("直播监听：未启用")
         else:
