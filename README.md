@@ -12,9 +12,20 @@
 - **置顶动态合并转发**：`/vt_pinned` 在 OneBot 上以合并转发形式发送动态完整截图与被识别为周表的图片。
 - **凌晨四点问候**：`/vt_4016` 随机挑一个正处于凌晨四点的国家和地区，交给模型造句发送。
 
-<a href="docs/schedule.webp"><img src="docs/schedule.webp" width="520" alt="周表图片示例"></a>
+### 界面预览
 
-`/vt_schedule` 生成的周表图片（示例场次，横幅取自主播真实空间资料）。点击可看完整尺寸。
+<a href="docs/vt_schedule.webp"><img src="docs/vt_schedule.webp" width="520" alt="/vt_schedule 在聊天里的样子"></a>
+
+在聊天里收到 `/vt_schedule` 的样子：一周拆成上下两行、每列一天，今天所在列高亮，未兑现的场次标红，底部是本周时长与迟到统计。
+
+<a href="docs/schedule.webp"><img src="docs/schedule.webp" width="460" alt="周表图片完整尺寸"></a>
+
+同一个功能的完整尺寸输出（这次的场次是示例数据，横幅取自主播真实的 B 站空间资料）。点击可放大。
+
+| 上播通知 | 凌晨四点问候 |
+| :---: | :---: |
+| <img src="docs/vt_start.webp" width="330" alt="上播通知"> | <img src="docs/vt_4016.webp" width="330" alt="/vt_4016 回复"> |
+| 带直播间封面、标题与链接 | `/vt_4016` 随机挑一个正处于凌晨四点的国家 |
 
 ## 🚀 安装
 
