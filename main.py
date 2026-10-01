@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.24")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.25")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -198,7 +198,7 @@ class MyPlugin(Star):
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
-    @filter.command("bili_login", alias={"vt_login"})
+    @filter.command("bili_login")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def bili_login(self, event: AstrMessageEvent):
         """管理员私聊扫码登录 Bilibili；已有凭据在成功后替换。"""
@@ -493,40 +493,67 @@ class MyPlugin(Star):
     async def vt_status(self, event: AstrMessageEvent):
         """查看监听状态和本次运行的计数。"""
         listener = self.live_listener
-        if listener is None:
-            yield event.plain_result("直播监听尚未初始化。")
+        if self.targets is None:
+            # 初始化没跑完时没有任何子系统可报告。
+            yield event.plain_result("插件尚未初始化完成，暂无状态可报；若持续如此请查看插件日志。")
             return
-        running = self.live_listener_task is not None and not self.live_listener_task.done()
+        running = listener is not None and self.live_listener_task is not None and not self.live_listener_task.done()
         work = await self.targets.data.get_work_status()
         watch_errors = []
         for uid in await self.targets.data.get_subscribed_uids():
             tracked = await self.targets.data.get_schedule_tracking(uid)
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
-        yield event.plain_result(
-            f"VTuber Monitor 0.7.24\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
-            f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
-            f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
-            f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"
-            f"最近轮询：{listener.last_poll_at or '无'}\n"
-            f"最近成功：{listener.last_success_at or '无'}\n"
-            f"监听错误：{listener.failures}；发送成功：{self.dispatcher.sent}；发送失败：{self.dispatcher.failed}"
-            f"\n登录凭据：{'已保存扫码凭据' if self.bili.has_credentials else '未登录（管理员私聊执行 /bili_login 扫码）'}"
-            f"\n动态监听：{'运行中' if self.dynamic_listener_task and not self.dynamic_listener_task.done() else '未运行'}"
-            f"；完成 {self.dynamic_listener.rounds} 轮，新增 {self.dynamic_listener.received} 条，失败 {self.dynamic_listener.failures} 次"
-            f"\n周表扫描时间：{'、'.join(item.strftime('%H:%M') for item in self.discovery.watch.scan_times) or '未设置（已关闭）'}"
-            f"；普通关注自动解析：{'开启' if self.discovery.watch.auto_parse_normal else '关闭'}"
-            f"；视觉模型：{'已指定' if self.discovery.parser.provider_id else '未指定'}"
-            f"\n定时扫描：{'运行中（特别关注自动解析）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}"
-            f"\n空间资料：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}"
-            f"\n自动调播：{'有本周周表时自动处理' if self.dynamic_listener.adjustment else '关闭'}；模型：{'已指定' if self.adjustment.provider_id else '未指定'}"
-            f"\n周表推送：{'开启' if self.dispatcher.schedule_enabled else '关闭'}；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}（依赖动态轮询）"
-            f"\n调播任务：{work['adjustment_jobs']}；周表通知：{work['schedule_outbox']}"
-            f"\n实际直播：待落位 {work['live_sessions']['pending']} 场"
+        # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
+        lines = ["VTuber Monitor 0.7.25"]
+        if listener is None:
+            lines.append("直播监听：未启用")
+        else:
+            lines += [
+                f"直播监听：{'运行中' if running else '已停止/未启用'}",
+                f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮",
+                f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒",
+                f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}",
+                f"最近轮询：{listener.last_poll_at or '无'}",
+                f"最近成功：{listener.last_success_at or '无'}",
+            ]
+        counts = [f"监听错误：{listener.failures}"] if listener is not None else []
+        if self.dispatcher is not None:
+            counts.append(f"发送成功：{self.dispatcher.sent}；发送失败：{self.dispatcher.failed}")
+        lines.append("；".join(counts) if counts else "发送计数：未初始化")
+        if self.bili is not None:
+            lines.append(f"登录凭据：{'已保存扫码凭据' if self.bili.has_credentials else '未登录（管理员私聊执行 /bili_login 扫码）'}")
+        if self.dynamic_listener is None:
+            lines.append("动态监听：未初始化")
+        else:
+            lines.append(
+                f"动态监听：{'运行中' if self.dynamic_listener_task and not self.dynamic_listener_task.done() else '未运行'}"
+                f"；完成 {self.dynamic_listener.rounds} 轮，新增 {self.dynamic_listener.received} 条，失败 {self.dynamic_listener.failures} 次")
+        if self.discovery is None:
+            lines.append("周表扫描：未初始化")
+        else:
+            lines.append(
+                f"周表扫描时间：{'、'.join(item.strftime('%H:%M') for item in self.discovery.watch.scan_times) or '未设置（已关闭）'}"
+                f"；普通关注自动解析：{'开启' if self.discovery.watch.auto_parse_normal else '关闭'}"
+                f"；视觉模型：{'已指定' if self.discovery.parser.provider_id else '未指定'}")
+        lines.append(f"定时扫描：{'运行中（特别关注自动解析）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}")
+        lines.append(f"空间资料：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}")
+        if self.dynamic_listener is not None and self.adjustment is not None:
+            lines.append(
+                f"自动调播：{'有本周周表时自动处理' if self.dynamic_listener.adjustment else '关闭'}"
+                f"；模型：{'已指定' if self.adjustment.provider_id else '未指定'}")
+        if self.dispatcher is not None:
+            lines.append(
+                f"周表推送：{'开启' if self.dispatcher.schedule_enabled else '关闭'}"
+                f"；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}（依赖动态轮询）")
+        lines.append(f"调播任务：{work['adjustment_jobs']}；周表通知：{work['schedule_outbox']}")
+        lines.append(
+            f"实际直播：待落位 {work['live_sessions']['pending']} 场"
             f"；未记录 {work['live_sessions']['skipped']} 场（起点未知）"
-            f"；已记录 {work['live_sessions']['recorded']} 场"
-            + ("\n周表检查待处理：\n" + "\n".join(watch_errors[:5]) if watch_errors else "")
-        )
+            f"；已记录 {work['live_sessions']['recorded']} 场")
+        if watch_errors:
+            lines.append("周表检查待处理：\n" + "\n".join(watch_errors[:5]))
+        yield event.plain_result("\n".join(lines))
 
     async def terminate(self):
         try:

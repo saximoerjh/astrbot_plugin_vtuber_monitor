@@ -41,9 +41,18 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
     plugin = main.MyPlugin(object(), {"auto_special_live": False, "auto_adjustment_with_schedule": False,
                                       "schedule_image_enabled": False})
     try:
+        # 初始化没跑完时只报整体状态，不点名某个子系统。
+        assert "尚未初始化" in ([x async for x in plugin.vt_status(event)])[0]
         await plugin.initialize()
         assert plugin.live_listener_task is None
         assert "未启用" in ([x async for x in plugin.vt_status(event)])[0]
+        # 直播监听缺失时不能提前结束，其余子系统必须照常汇报。
+        saved_listener = plugin.live_listener
+        plugin.live_listener = None
+        degraded = ([x async for x in plugin.vt_status(event)])[0]
+        assert "直播监听：未启用" in degraded
+        assert "实际直播：" in degraded and "发送成功：" in degraded
+        plugin.live_listener = saved_listener
         assert [x async for x in plugin.vt_ping(event)] == ["VTuber Monitor OK"]
         assert "用法" in ([x async for x in plugin.vt_sub(event)])[0]
         event.is_admin = lambda: False

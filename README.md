@@ -87,7 +87,7 @@ python -m playwright install chromium
 | **vt_4016** | (无) | 看看现在哪个国家是凌晨四点 | 所有人 |
 | **vt_status** | (无) | 查看监听状态与计数 | 所有人 |
 | **vt_ping** | (无) | 检查插件是否已加载 | 所有人 |
-| **bili_login**（别名 `vt_login`） | (无) | 私聊扫码登录 Bilibili | 管理员 |
+| **bili_login** | (无) | 私聊扫码登录 Bilibili | 管理员 |
 | **vt_parse_schedule** | `<UID或别名> [本周\|上周\|下周\|YYYY-MM-DD]` | 手动解析周表，并建立定时检查基准 | 管理员 |
 | **vt_adjust_test** | `<UID或别名> <动态正文>` | 调播预演，不保存、不推送 | 管理员 |
 | **vt_retry_adjust** | `<UID或别名> <动态ID>` | 重试一条失败的调播 | 管理员 |
