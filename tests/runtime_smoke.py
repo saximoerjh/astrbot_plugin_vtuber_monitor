@@ -29,11 +29,11 @@ def main():
                 schema = json.loads((Path(config_module.__file__).resolve().parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
                 config_path = Path(directory) / "legacy_config.json"
                 config_path.write_text(json.dumps({"live_poll_interval": 240, "auto_special_live": False,
-                                                   "schedule_provider_id": "test/provider"}), encoding="utf-8")
+                                                   "multimodal_provider_id": "test/provider"}), encoding="utf-8")
                 migrated = AstrBotConfig(str(config_path), schema=schema)
                 flat = prepare_config(migrated)
                 assert flat["live_poll_interval"] == 240 and not flat["auto_special_live"]
-                assert flat["schedule_provider_id"] == "test/provider"
+                assert flat["multimodal_provider_id"] == "test/provider"
                 migrated["live"]["live_poll_interval"] = 150
                 migrated.save_config()
                 assert prepare_config(AstrBotConfig(str(config_path), schema=schema))["live_poll_interval"] == 150

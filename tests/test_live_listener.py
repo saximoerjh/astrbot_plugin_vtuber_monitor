@@ -155,6 +155,10 @@ async def test_dispatcher_failures_options_and_special(tmp_path):
     context.send_message.reset_mock(side_effect=True)
     dispatcher.normal_end = False
     await dispatcher.push_live_ended(state, subscriptions)
+    # 特别关注下播默认关闭：普通关注关掉之后一个都不发。
+    assert context.send_message.await_count == 0
+    dispatcher.special_end = True
+    await dispatcher.push_live_ended(state, subscriptions)
     assert context.send_message.await_args.args[0] == "b"
     assert context.send_message.await_count == 1
     context.send_message.return_value = False

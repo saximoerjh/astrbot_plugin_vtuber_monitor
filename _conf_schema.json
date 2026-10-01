@@ -5,10 +5,10 @@
     "type": "object",
     "items": {
       "auto_special_live": {
-        "description": "特别关注直播通知",
+        "description": "监听特别关注",
         "type": "bool",
         "default": true,
-        "hint": "自动监听特别关注的开播和下播，不受普通关注通知开关影响。"
+        "hint": "自动监听特别关注的上下播，用于上下播通知、实际直播落位与统计；关闭后不再记录实际直播。"
       },
       "auto_adjustment_with_schedule": {
         "description": "有周表时自动调播",
@@ -22,25 +22,11 @@
         "default": true,
         "hint": "北京时间每日零点检查已手动解析的订阅周表；重载后补查当日，独立于动态轮询"
       },
-      "schedule_provider_id": {
-        "description": "周表识别模型",
+      "multimodal_provider_id": {
+        "description": "多模态识别模型",
         "type": "string",
         "default": "",
-        "hint": "请选择支持图片输入的模型。留空时只缓存图片，不解析周表。",
-        "_special": "select_provider"
-      },
-      "adjustment_provider_id": {
-        "description": "调播判断模型",
-        "type": "string",
-        "default": "",
-        "hint": "请选择支持工具调用的模型；留空时使用周表识别模型。",
-        "_special": "select_provider"
-      },
-      "greeting_provider_id": {
-        "description": "凌晨问候模型",
-        "type": "string",
-        "default": "",
-        "hint": "用于 /vt_4016 造句；留空时复用周表识别模型，模型不可用时使用固定句式。",
+        "hint": "同时用于周表识别、调播判断与凌晨问候：需要支持图片输入，调播判断还要求工具调用能力。留空时只缓存周表图片、不解析不调播，凌晨问候改用固定句式。",
         "_special": "select_provider"
       }
     }
@@ -51,16 +37,28 @@
     "type": "object",
     "items": {
       "normal_live_start_push": {
-        "description": "普通关注开播通知",
+        "description": "普通关注上播通知",
         "type": "bool",
         "default": true,
-        "hint": "需要开启“同时监听普通关注”；不影响特别关注通知。"
+        "hint": "需要开启“同时监听普通关注”。"
       },
       "normal_live_end_push": {
         "description": "普通关注下播通知",
         "type": "bool",
         "default": true,
-        "hint": "需要开启“同时监听普通关注”；不影响特别关注通知。"
+        "hint": "需要开启“同时监听普通关注”。"
+      },
+      "special_live_start_push": {
+        "description": "特别关注上播通知",
+        "type": "bool",
+        "default": true,
+        "hint": "特别关注上下播通知独立于普通关注，默认只推上播。"
+      },
+      "special_live_end_push": {
+        "description": "特别关注下播通知",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。打开后特别关注每次下播也会推送。"
       },
       "enable_schedule_push": {
         "description": "周表更新通知",
@@ -261,14 +259,8 @@
     "default": false,
     "invisible": true
   },
-  "adjustment_provider_id": {
-    "description": "支持工具调用的模型提供商 ID，留空复用 schedule_provider_id",
-    "type": "string",
-    "default": "",
-    "invisible": true
-  },
-  "greeting_provider_id": {
-    "description": "凌晨问候模型提供商 ID，留空复用 schedule_provider_id",
+  "multimodal_provider_id": {
+    "description": "周表识别、调播判断与凌晨问候共用的多模态模型提供商 ID",
     "type": "string",
     "default": "",
     "invisible": true
@@ -291,16 +283,28 @@
     "default": false,
     "invisible": true
   },
-  "enable_schedule_processing": {
-    "description": "动态轮询时处理周表候选（需同时开启动态轮询；无视觉模型时仅存图片）",
+  "special_live_start_push": {
+    "description": "特别关注上播通知，独立于普通关注开关，默认开启",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "special_live_end_push": {
+    "description": "特别关注下播通知，独立于普通关注开关，默认关闭",
     "type": "bool",
     "default": false,
     "invisible": true
   },
-  "schedule_provider_id": {
-    "description": "用于周表图片解析的视觉模型提供商 ID（留空不调用模型）",
-    "type": "string",
-    "default": "",
+  "_provider_merged": {
+    "description": "模型选择合并标记",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "enable_schedule_processing": {
+    "description": "动态轮询时处理周表候选（需同时开启动态轮询；无视觉模型时仅存图片）",
+    "type": "bool",
+    "default": false,
     "invisible": true
   },
   "schedule_keywords": {

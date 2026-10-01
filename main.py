@@ -34,7 +34,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.15")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.16")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -68,7 +68,7 @@ class MyPlugin(Star):
         self.targets = TargetService(data)
         self.greeting = GreetingService(
             self.context, data,
-            self.config.get("greeting_provider_id", "") or self.config.get("schedule_provider_id", ""))
+            self.config.get("multimodal_provider_id", ""))
         screenshot = PinnedScreenshot(self.config.get("screenshot_browser_channel", "auto"))
         self.schedule_renderer = ScheduleRenderer(
             data_dir, channel=self.config.get("screenshot_browser_channel", "auto"))
@@ -76,6 +76,8 @@ class MyPlugin(Star):
             self.context,
             normal_start=self.config.get("normal_live_start_push", True),
             normal_end=self.config.get("normal_live_end_push", True),
+            special_start=self.config.get("special_live_start_push", True),
+            special_end=self.config.get("special_live_end_push", False),
         )
         listener = LiveListener(data, None, self.dispatcher,
                                 float(self.config.get("live_poll_interval", 120)),
@@ -92,7 +94,7 @@ class MyPlugin(Star):
                                         reconciler=self.live_recorder)
         self.adjustment = AdjustmentAgent(
             self.context, self.schedules,
-            self.config.get("adjustment_provider_id", "") or self.config.get("schedule_provider_id", ""),
+            self.config.get("multimodal_provider_id", ""),
             self.config.get("adjustment_regex", DEFAULT_ADJUSTMENT_REGEX))
         if (self.config.get("enable_adjustment_processing", False) or
                 self.config.get("auto_adjustment_with_schedule", True)):
@@ -101,7 +103,7 @@ class MyPlugin(Star):
         dynamic_listener.eligible_only = not self.config.get("enable_dynamic_polling", False)
         dynamic_listener.dispatcher = self.dispatcher
         self.discovery = ScheduleDiscovery(
-            data, None, ScheduleParser(self.context, self.config.get("schedule_provider_id", "")),
+            data, None, ScheduleParser(self.context, self.config.get("multimodal_provider_id", "")),
             self.schedules, self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)))
         self.bili = BiliClient(
             timeout=float(self.config.get("request_timeout", 10)),
@@ -479,7 +481,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.15\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.16\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"

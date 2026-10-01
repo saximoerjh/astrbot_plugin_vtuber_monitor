@@ -1,4 +1,4 @@
-# astrbot_plugin_vtuber_monitor
+﻿# astrbot_plugin_vtuber_monitor
 
 面向 Bilibili 虚拟主播的直播订阅与周表追踪插件，主要为vibe coding产物。当前 **V0.7.14** 新增 `/vt_4016` 凌晨四点问候，支持主播多个别名、置顶动态截图及周表图合并转发、周表识别、历史缓存、受控调播、修订差异及通知重试。已实测授权主页读取、截图、DeepSeek Flash 图片解析和工具调用；真实聊天消息路由与自动推送仍需在机器人中验收。
 
@@ -12,7 +12,7 @@
 
 `auto_special_live` 默认开启，添加 `special` 订阅后自动监听上下播，无需开启全体订阅的直播开关；普通关注仍由 `enable_live_polling` 控制。原来已开启全体监听的配置保留。
 
-`auto_adjustment_with_schedule` 默认开启。特别关注主播有本周周表，且配置了 `adjustment_provider_id`（留空复用 `schedule_provider_id`）时，自动每 300 秒读取动态并处理调播，无需另外打开动态轮询或调播处理开关。手动解析或每日检查建立本周周表后，下一轮自动生效；仅有历史/下周周表时等待本周周表，不将修改应用到其他周。缺少周表或模型时不消耗调播任务重试次数。
+`auto_adjustment_with_schedule` 默认开启。特别关注主播有本周周表，且配置了 `multimodal_provider_id` 时，自动每 300 秒读取动态并处理调播，无需另外打开动态轮询或调播处理开关。手动解析或每日检查建立本周周表后，下一轮自动生效；仅有历史/下周周表时等待本周周表，不将修改应用到其他周。缺少周表或模型时不消耗调播任务重试次数。
 
 自动调播与通知分开：是否发送调播结果仍由 `enable_adjustment_push` 控制。若要彻底关闭自动调播，关闭 `auto_adjustment_with_schedule` 和 `enable_adjustment_processing`；若要停止所有直播监听，关闭 `auto_special_live` 和 `enable_live_polling`。配置修改后重载。
 
@@ -36,7 +36,7 @@
 
 “一周”指北京时间周一至周日。该周第二个及后续不同版本交给模型结合历史周表判断同周修订或下一周，不强制顺延。重试同一个版本不增加更新次数。模型无法确认、请求失败或日期冲突时保留原周表，下一次检查重试；`/vt_status` 显示待处理原因和动态链接。手动重新解析可确认日期并替换待处理基准。
 
-每天一次检查只能观察两次检查之间最终留下的版本，无法还原期间发生后又被覆盖的多次编辑。模型解析需要已配置的 `schedule_provider_id`；未改动的周表不调用模型。自动通知沿用已有推送开关及动态轮询投递机制。
+每天一次检查只能观察两次检查之间最终留下的版本，无法还原期间发生后又被覆盖的多次编辑。模型解析需要已配置的 `multimodal_provider_id`；未改动的周表不调用模型。自动通知沿用已有推送开关及动态轮询投递机制。
 
 本次开发中途完整测试 **143 项通过**；后续补充日期变化、自然周计数重置及模糊结果保留测试后，重跑被 Windows 应用控制策略拦截（4551），最终增量未完成全套测试。真实零点定时触发及真实多版本模型判断仍待运行验收。
 
@@ -148,7 +148,7 @@
 
 `/vt_pinned 小路` 在 OneBot/aiocqhttp（如 NapCat）上发送一条合并转发：第一条是实际 Bilibili 动态卡片的完整截图；之后只附上被识别为直播周表的图片，保持原顺序。不再单独附上立绘、周边等其他配图，也不追加原来的正文和链接消息。完整截图仍保留原动态内容。其他平台（包括 WebChat、QQ 官方接口）按相同顺序分条发送；OneBot 合并转发报错时也会提示并分条回退。
 
-优先复用当前动态/图片/正文对应的有效识别结果；“是周表但缺少日期”同样可以返回图片。尚未识别的配图使用 `schedule_provider_id` 做仅分类的视觉调用，结果单独缓存，不调用 ScheduleService、不写周表或触发调播。首次识别多图时可能较慢并消耗模型额度，重复请求复用缓存。未配置模型或分类失败时，不将未知配图当作周表发送；没有已确认周表图时只返回截图。
+优先复用当前动态/图片/正文对应的有效识别结果；“是周表但缺少日期”同样可以返回图片。尚未识别的配图使用 `multimodal_provider_id` 做仅分类的视觉调用，结果单独缓存，不调用 ScheduleService、不写周表或触发调播。首次识别多图时可能较慢并消耗模型额度，重复请求复用缓存。未配置模型或分类失败时，不将未知配图当作周表发送；没有已确认周表图时只返回截图。
 
 截图使用 Playwright 独立无头浏览器，读取当前插件登录 Cookie，不读取个人浏览器资料、不访问第三方截图服务、不调用模型。浏览器每次请求结束或取消后关闭，插件卸载会取消等待中的截图任务；使用临时浏览器上下文，不写个人浏览器用户目录，截图作为内存图片发送。隐藏页头悬浮栏以避免遮挡正文，但保留真实动态卡片内容。
 
@@ -234,21 +234,21 @@
 
 - `enable_live_polling`：默认 `false`，开启后监听全部订阅；特别关注默认由 `auto_special_live` 自动监听。
 - `live_poll_interval`：默认 120 秒，范围 10–86400；指一轮处理结束后的等待时间。
-- `normal_live_start_push` / `normal_live_end_push`：默认 `true`，分别控制普通关注上下播通知。
+- `normal_live_start_push` / `normal_live_end_push`：默认都是 `true`，控制普通关注的上播／下播通知。
+- `special_live_start_push` / `special_live_end_push`：默认上播 `true`、下播 `false`。特别关注的上下播通知独立于普通关注开关，默认只在开播时推送。
 - `enable_dynamic_polling`：默认 `false`，开启后轮询全部特别关注；自动调播模式仅轮询已有本周周表且有模型的特别关注。
 - `dynamic_poll_interval`：默认 300 秒，范围 30–86400。
 - `enable_schedule_processing`：默认 `false`，启用后动态轮询附带周表候选处理，也会在新建特别关注时尝试加载周表。
-- `schedule_provider_id`：视觉模型提供商 ID，留空不调用模型。本机已配置为 `deepseek/deepseek-flash`，确认使用官方接口并实测识别成功。
+- `multimodal_provider_id`：周表识别、调播判断与凌晨问候共用的多模态模型提供商 ID，留空则只缓存周表图片、不解析不调播，凌晨问候改用固定句式。需要支持图片输入（调播判断还要求工具调用能力）。本机已配置为 `deepseek/deepseek-flash`，确认使用官方接口并实测识别成功。
 - `schedule_keywords`：默认周表、本周、schedule、直播安排、本周安排。
 - `enable_adjustment_processing`：默认 `false`，保留手动开启入口；`auto_adjustment_with_schedule` 默认按本周周表和模型自动启用调播。
-- `adjustment_provider_id`：留空复用 `schedule_provider_id`；DeepSeek Flash 已通过真实工具调用检查。
 - `adjustment_regex`：默认 `改到|改为|改成|延期|推迟|提前|顺延|取消|鸽|补播|加播|临时`。仅允许关键词的 `|` 分支，不支持复杂正则，避免阻塞轮询。
 - `enable_schedule_push` / `enable_adjustment_push`：默认 `false`；分别控制周表更新与调播通知，需要动态轮询投递。
 - `schedule_image_enabled`：默认 `true`，`/vt_schedule` 返回 7 列时间轴图片；关闭后返回文字版。渲染失败自动回退文字。
 - `unfulfilled_after_hours`：默认 `2`，排期到点后超过该小时数仍未开播且没有被动态调播的场次，在周表中标记为未兑现。
 - `screenshot_browser_channel`：默认 `auto`，置顶动态截图与周表图片共用的浏览器通道，可选 `chromium`、`msedge`、`chrome`。
 
-特别关注的上下播通知不受普通关注开关影响，默认自动启动监听。两种轮询独立取消。
+特别关注的上下播通知不受普通关注开关影响，由 `special_live_start_push`／`special_live_end_push` 单独控制。两种轮询独立取消。
 
 配置修改后重载插件。V0.1 数据库会自动补充 `last_live_change_at` 字段，保留原订阅和状态。
 

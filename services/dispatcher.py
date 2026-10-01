@@ -20,12 +20,15 @@ def make_live_message(text, cover):
 
 class Dispatcher:
     def __init__(self, context, *, normal_start=True, normal_end=True,
+                 special_start=True, special_end=False,
                  send_timeout=15, message_factory=make_message, live_message_factory=make_live_message):
         if not math.isfinite(send_timeout) or send_timeout <= 0:
             raise ValueError("消息发送超时必须是正数。")
         self.context = context
         self.normal_start = normal_start
         self.normal_end = normal_end
+        self.special_start = special_start
+        self.special_end = special_end
         self.send_timeout = send_timeout
         self.message_factory = message_factory
         self.live_message_factory = live_message_factory
@@ -77,8 +80,9 @@ class Dispatcher:
             text += f"\nhttps://live.bilibili.com/{state.room_id}"
         destinations = {
             s.umo for s in subscriptions if s.uid == state.uid and (
-                s.level == FollowLevel.SPECIAL or
-                (self.normal_start if started else self.normal_end))
+                (self.special_start if started else self.special_end)
+                if s.level == FollowLevel.SPECIAL
+                else (self.normal_start if started else self.normal_end))
         }
         for umo in sorted(destinations):
             cover = state.live_cover if started else ""
