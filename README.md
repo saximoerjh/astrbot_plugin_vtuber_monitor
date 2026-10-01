@@ -14,7 +14,7 @@
 
 `auto_adjustment_with_schedule` 默认开启。特别关注主播有本周周表，且配置了 `multimodal_provider_id` 时，自动每 300 秒读取动态并处理调播，无需另外打开动态轮询或调播处理开关。手动解析或每日检查建立本周周表后，下一轮自动生效；仅有历史/下周周表时等待本周周表，不将修改应用到其他周。缺少周表或模型时不消耗调播任务重试次数。
 
-自动调播与通知分开：是否发送调播结果仍由 `enable_adjustment_push` 控制。若要彻底关闭自动调播，关闭 `auto_adjustment_with_schedule` 和 `enable_adjustment_processing`；若要停止所有直播监听，关闭 `auto_special_live` 和 `enable_live_polling`。配置修改后重载。
+自动调播与通知分开：是否发送调播结果仍由 `enable_adjustment_push` 控制。若要彻底关闭自动调播，关闭 `auto_adjustment_with_schedule`；若要停止所有直播监听，关闭 `auto_special_live` 和 `enable_live_polling`。配置修改后重载。
 
 ## 直播轮询退避与随机间隔（0.7.9）
 
@@ -241,7 +241,6 @@
 - `dynamic_poll_interval`：默认 300 秒，范围 30–86400。
 - `multimodal_provider_id`：周表识别、调播判断与凌晨问候共用的多模态模型提供商 ID，留空则只缓存周表图片、不解析不调播，凌晨问候改用固定句式。需要支持图片输入（调播判断还要求工具调用能力）。本机已配置为 `deepseek/deepseek-flash`，确认使用官方接口并实测识别成功。
 - `schedule_keywords`：默认周表、本周、schedule、直播安排、本周安排。
-- `enable_adjustment_processing`：默认 `false`，保留手动开启入口；`auto_adjustment_with_schedule` 默认按本周周表和模型自动启用调播。
 - `adjustment_regex`：默认 `改到|改为|改成|延期|推迟|提前|顺延|取消|鸽|补播|加播|临时`。仅允许关键词的 `|` 分支，不支持复杂正则，避免阻塞轮询。
 - `enable_schedule_push` / `enable_adjustment_push`：默认 `false`；分别控制周表更新与调播通知，需要动态轮询投递。
 - `schedule_image_enabled`：默认 `true`，`/vt_schedule` 返回 7 列时间轴图片；关闭后返回文字版。渲染失败自动回退文字。

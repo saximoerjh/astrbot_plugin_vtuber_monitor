@@ -110,12 +110,6 @@
         "default": false,
         "hint": "轮询全部特别关注的新动态并识别周表图，包括还没有周表的主播。关闭则只轮询已有本周周表的主播（够自动调播用）。开销随订阅数增长。"
       },
-      "enable_adjustment_processing": {
-        "description": "手动启用调播处理",
-        "type": "bool",
-        "default": false,
-        "hint": "保留手动入口，需要动态任务、本周周表和模型。关闭本项不会关闭“有周表时自动调播”。"
-      },
       "dynamic_poll_interval": {
         "description": "动态检查间隔（秒）",
         "type": "float",
@@ -247,8 +241,8 @@
     "default": "auto",
     "invisible": true
   },
-  "enable_adjustment_processing": {
-    "description": "自动识别特别关注的新动态并通过受控工具调播（需动态轮询及本周周表）",
+  "_adjustment_processing_merged": {
+    "description": "手动调播入口并入自动调播的迁移标记",
     "type": "bool",
     "default": false,
     "invisible": true

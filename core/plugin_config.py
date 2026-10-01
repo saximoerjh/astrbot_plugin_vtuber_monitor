@@ -7,6 +7,33 @@ MERGED_PROVIDER_KEY = "multimodal_provider_id"
 LEGACY_PROVIDER_KEYS = ("schedule_provider_id", "adjustment_provider_id", "greeting_provider_id")
 DISCOVERY_KEY = "auto_discover_schedule"
 LEGACY_DISCOVERY_KEYS = ("enable_dynamic_polling", "enable_schedule_processing")
+ADJUSTMENT_KEY = "auto_adjustment_with_schedule"
+LEGACY_ADJUSTMENT_KEY = "enable_adjustment_processing"
+
+
+def merge_adjustment_switches(config):
+    """把「手动启用调播处理」并入「有周表时自动调播」，只做一次。
+
+    旧开关只在刻意关掉自动调播时才起作用，语义就是"要不要自动调播"，
+    因此旧值为真时把新开关一起打开，随后清掉旧键。
+    """
+    if config.get("_adjustment_processing_merged", False):
+        return False
+    common = config.setdefault("common", {})
+    schedule = config.setdefault("schedule", {})
+    # 旧键历史上在 schedule 分组，也见过落在扁平槽位或 common 里的配置，
+    # 三处都查一遍再统一清理。
+    legacy = config.get(LEGACY_ADJUSTMENT_KEY)
+    for holder in (schedule, common):
+        if legacy is None:
+            legacy = holder.get(LEGACY_ADJUSTMENT_KEY)
+    if legacy:
+        common[ADJUSTMENT_KEY] = True
+    for holder in (common, schedule):
+        holder.pop(LEGACY_ADJUSTMENT_KEY, None)
+    config.pop(LEGACY_ADJUSTMENT_KEY, None)
+    config["_adjustment_processing_merged"] = True
+    return True
 
 
 def merge_discovery_switches(config):
@@ -72,6 +99,8 @@ def prepare_config(config):
     if merge_provider_selection(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
     if merge_discovery_switches(config) and callable(getattr(config, "save_config", None)):
+        config.save_config()
+    if merge_adjustment_switches(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
     flat = {}
     for group, definition in groups.items():

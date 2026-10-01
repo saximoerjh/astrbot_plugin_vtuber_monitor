@@ -80,6 +80,30 @@ def test_discovery_merge_cleans_old_keys_and_runs_once():
     assert prepare_config(config)["auto_discover_schedule"] is False
 
 
+def test_manual_adjustment_switch_merges_into_auto_adjustment():
+    """手动调播入口并入自动调播；旧值为真时不能把自动调播留在关闭状态。"""
+    # 旧键在 schedule 分组里（历史位置），新开关在 common 分组。
+    config = {"_grouped_config_migrated": True,
+              "common": {"auto_adjustment_with_schedule": False},
+              "schedule": {"enable_adjustment_processing": True}}
+    flat = prepare_config(config)
+    assert flat["auto_adjustment_with_schedule"] is True
+    assert config["_adjustment_processing_merged"] is True
+    assert "enable_adjustment_processing" not in config["schedule"]
+    assert "enable_adjustment_processing" not in config
+    # 旧值本来就是关的，不会把用户显式关闭的自动调播打开。
+    off = {"_grouped_config_migrated": True,
+           "common": {"auto_adjustment_with_schedule": False},
+           "schedule": {"enable_adjustment_processing": False}}
+    assert prepare_config(off)["auto_adjustment_with_schedule"] is False
+    # 扁平槽位里的旧值同样能被读到并清理。
+    flat_slot = {"_grouped_config_migrated": True,
+                 "common": {"auto_adjustment_with_schedule": False},
+                 "enable_adjustment_processing": True}
+    assert prepare_config(flat_slot)["auto_adjustment_with_schedule"] is True
+    assert "enable_adjustment_processing" not in flat_slot
+
+
 def test_grouped_schema_has_short_labels_and_all_legacy_fields_hidden():
     schema = json.loads((Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
     groups = [value for value in schema.values() if value["type"] == "object"]

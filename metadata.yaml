@@ -1,6 +1,6 @@
 name: astrbot_plugin_vtuber_monitor
 display_name: VTuber 直播与周表助手
 desc: 订阅直播通知、扫码登录、主播别名、周表识别与历史缓存、零点检查和自动调播。
-version: 0.7.17
+version: 0.7.18
 author: hibiscus
 repo: https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
