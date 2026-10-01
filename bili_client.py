@@ -42,7 +42,7 @@ class BiliRateLimited(BiliError):
 
 
 class BiliClient:
-    def __init__(self, timeout: float = 10, max_retry: int = 2, *, sessdata="", transport=None):
+    def __init__(self, timeout: float = 10, max_retry: int = 2, *, transport=None):
         if not math.isfinite(timeout) or not 0 < timeout <= 120:
             raise ValueError("request_timeout 必须在 0 到 120 秒之间。")
         if type(max_retry) is not int or not 0 <= max_retry <= 5:
@@ -50,15 +50,10 @@ class BiliClient:
         self.max_retry = max_retry
         self._cooldowns = {}
         self._rate_strikes = {}
-        if not isinstance(sessdata, str) or any(not 33 <= ord(c) <= 126 or c in ';"\\' for c in sessdata):
-            raise ValueError("SESSDATA 请只填写 Cookie 中的值，不要填写完整 Cookie。")
-        self.has_credentials = bool(sessdata)
-        cookies = httpx.Cookies()
-        if sessdata:
-            cookies.set("SESSDATA", sessdata, domain=".bilibili.com", path="/")
+        # 登录凭据只来自扫码登录（LoginService → set_credentials），没有配置项。
+        self.has_credentials = False
         self.http = httpx.AsyncClient(
             timeout=timeout, transport=transport,
-            cookies=cookies,
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://live.bilibili.com/"},
         )
 
@@ -184,7 +179,7 @@ class BiliClient:
                         raise self._rate_limit(host, response.headers.get("Retry-After", ""))
                     retry = False
                     if code in (-101, -111):
-                        raise BiliError("Bilibili 登录凭据缺失或失效，请在插件配置中更新 SESSDATA 后重载。")
+                        raise BiliError("Bilibili 登录凭据缺失或失效，请由管理员私聊执行 /bili_login 重新扫码。")
                     raise BiliError(f"Bilibili API 错误（{code}），请稍后重试。")
                 data = body.get("data")
                 if not isinstance(data, dict):

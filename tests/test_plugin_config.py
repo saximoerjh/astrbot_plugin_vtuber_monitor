@@ -6,18 +6,17 @@ from astrbot_plugin_vtuber_monitor.core.plugin_config import prepare_config
 
 def test_legacy_config_migrates_once_without_resetting_values():
     config = {"auto_special_live": False, "live_poll_interval": 240,
-              "multimodal_provider_id": "my/provider", "bilibili_sessdata": "test-only",
+              "multimodal_provider_id": "my/provider", "request_timeout": 15,
               "schedule_keywords": ["custom"]}
     flat = prepare_config(config)
     assert flat["auto_special_live"] is False
     assert flat["live_poll_interval"] == 240
     assert flat["multimodal_provider_id"] == "my/provider"
     assert flat["schedule_keywords"] == ["custom"]
-    assert config["account"]["bilibili_sessdata"] == "test-only"
-    assert config["bilibili_sessdata"] == ""
+    assert config["advanced"]["request_timeout"] == 15
     config["live"]["live_poll_interval"] = 150
     assert prepare_config(config)["live_poll_interval"] == 150
-    assert prepare_config(config)["bilibili_sessdata"] == "test-only"
+    assert prepare_config(config)["request_timeout"] == 15
 
 
 def test_three_provider_settings_merge_into_one_without_losing_the_value():
@@ -79,6 +78,19 @@ def test_midnight_switch_off_migrates_to_an_empty_time_list():
     assert prepare_config(config)["schedule_scan_times"] == []
 
 
+def test_manual_sessdata_config_is_removed_once():
+    """手填 SESSDATA 的登录方式已拿掉，旧配置只清理一次。"""
+    config = {"_grouped_config_migrated": True,
+              "account": {"bilibili_sessdata": "legacy-value"},
+              "bilibili_sessdata": "legacy-value"}
+    flat = prepare_config(config)
+    assert "bilibili_sessdata" not in flat and "account" not in config
+    assert "bilibili_sessdata" not in config and config["_sessdata_removed"] is True
+    # 二次读取不再改动，也不会把键加回来。
+    assert "bilibili_sessdata" not in prepare_config(config)
+    assert "account" not in config
+
+
 def test_manual_adjustment_switch_merges_into_auto_adjustment():
     """手动调播入口并入自动调播；旧值为真时不能把自动调播留在关闭状态。"""
     # 旧键在 schedule 分组里（历史位置），新开关在 common 分组。
@@ -106,11 +118,10 @@ def test_manual_adjustment_switch_merges_into_auto_adjustment():
 def test_grouped_schema_has_short_labels_and_all_legacy_fields_hidden():
     schema = json.loads((Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
     groups = [value for value in schema.values() if value["type"] == "object"]
-    assert len(groups) == 6
+    assert len(groups) == 5
     for group in groups:
         for key, field in group["items"].items():
             assert len(field["description"]) <= 16 and field["hint"]
             assert schema[key]["invisible"]
             assert field["default"] == schema[key]["default"]
     assert schema["common"]["items"]["multimodal_provider_id"]["_special"] == "select_provider"
-    assert schema["account"]["items"]["bilibili_sessdata"]["secret"]

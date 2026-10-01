@@ -113,7 +113,8 @@ async def test_screenshot_timeout_import_error_and_cancel_do_not_leak_details():
 
 @pytest.mark.asyncio
 async def test_browser_cookies_are_domain_scoped_and_preview_restricted():
-    bili = BiliClient(sessdata="fake")
+    bili = BiliClient()
+    bili.set_credentials({"SESSDATA": "fake"})
     try:
         bili.http.cookies.set("foreign", "secret", domain="example.com")
         cookies = bili.browser_cookies()

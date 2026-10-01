@@ -46,7 +46,8 @@ async def test_image_download_domain_signature_and_cookies():
     def handler(request):
         assert "cookie" not in request.headers
         return httpx.Response(200, headers={"content-type": "image/png"}, content=b"\x89PNG\r\n\x1a\nfixture")
-    client = BiliClient(sessdata="fake", transport=httpx.MockTransport(handler))
+    client = BiliClient(transport=httpx.MockTransport(handler))
+    client.set_credentials({"SESSDATA": "fake"})
     try:
         assert (await client.download_image("http://i0.hdslb.com/a.png")).startswith(b"\x89PNG")
         with pytest.raises(BiliError):

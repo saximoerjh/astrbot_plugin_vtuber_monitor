@@ -9,6 +9,7 @@ DISCOVERY_KEY = "schedule_scan_times"
 LEGACY_DISCOVERY_KEYS = ("enable_dynamic_polling", "enable_schedule_processing",
                          "auto_discover_schedule")
 MIDNIGHT_KEY = "enable_midnight_schedule_check"
+LEGACY_SESSDATA_KEY = "bilibili_sessdata"
 ADJUSTMENT_KEY = "auto_adjustment_with_schedule"
 LEGACY_ADJUSTMENT_KEY = "enable_adjustment_processing"
 
@@ -65,6 +66,19 @@ def migrate_scan_times(config):
     return True
 
 
+def drop_manual_credentials(config):
+    """移除手填 SESSDATA 的登录方式（已由扫码登录取代），只清一次。
+
+    旧配置里的值不再被读取，直接删掉键；升级后需要重新扫码登录一次。
+    """
+    if config.get("_sessdata_removed", False):
+        return False
+    config.pop(LEGACY_SESSDATA_KEY, None)
+    config.pop("account", None)
+    config["_sessdata_removed"] = True
+    return True
+
+
 def merge_provider_selection(config):
     """把历史上分开的三个模型选择合并成一个，只做一次。
 
@@ -110,6 +124,8 @@ def prepare_config(config):
     if migrate_scan_times(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
     if merge_adjustment_switches(config) and callable(getattr(config, "save_config", None)):
+        config.save_config()
+    if drop_manual_credentials(config) and callable(getattr(config, "save_config", None)):
         config.save_config()
     flat = {}
     for group, definition in groups.items():

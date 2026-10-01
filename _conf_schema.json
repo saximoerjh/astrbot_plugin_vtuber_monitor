@@ -148,20 +148,6 @@
       }
     }
   },
-  "account": {
-    "description": "Bilibili 登录",
-    "hint": "推荐私聊发送 /bili_login 扫码登录，无需手动填写凭据。",
-    "type": "object",
-    "items": {
-      "bilibili_sessdata": {
-        "description": "手动登录凭据（可选）",
-        "type": "string",
-        "secret": true,
-        "default": "",
-        "hint": "推荐使用 /bili_login。手动填写时只填 Cookie 中 SESSDATA 的值，可留空。"
-      }
-    }
-  },
   "advanced": {
     "description": "高级设置",
     "hint": "网络与截图参数通常保持默认。修改配置后重载插件。",
@@ -231,6 +217,12 @@
   },
   "_scan_times_migrated": {
     "description": "扫描时间与旧开关的迁移标记",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "_sessdata_removed": {
+    "description": "手填 SESSDATA 登录方式的清理标记",
     "type": "bool",
     "default": false,
     "invisible": true
@@ -317,13 +309,6 @@
       "直播安排",
       "本周安排"
     ],
-    "invisible": true
-  },
-  "bilibili_sessdata": {
-    "description": "Bilibili SESSDATA（仅填写 Cookie 的值，可留空尝试匿名访问；修改后重载）",
-    "type": "string",
-    "secret": true,
-    "default": "",
     "invisible": true
   },
   "dynamic_poll_interval": {

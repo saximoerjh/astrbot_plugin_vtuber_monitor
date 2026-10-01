@@ -38,10 +38,7 @@ plugin i https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
 
 **必须先选「多模态识别模型」**，否则只能缓存周表图片、无法解析周表与自动调播。该模型同时用于周表识别、调播判断和凌晨问候，需要支持图片输入（调播判断还要求工具调用能力）。留空时周表不解析、不调播，问候改用固定句式。
 
-登录 Bilibili 有两种方式，扫码优先：
-
-1. 管理员私聊执行 `/bili_login` 扫码，凭据直接保存在 `plugin_data`；
-2. 在「Bilibili 登录」里手填 `bilibili_sessdata`（只填 Cookie 中 `SESSDATA` 的值本身）。
+登录 Bilibili 只有一种方式：**管理员私聊执行 `/bili_login` 扫码**，凭据由插件接口返回并保存在 `plugin_data`。没有可手动填写的凭据配置项，也不需要自己抓 Cookie。不登录也能用，只是部分接口受 Bilibili 风控限制。
 
 常用配置项：
 
@@ -129,7 +126,7 @@ plugin i https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
    属于 Bilibili 风控。先确认凭据有效（重新 `/bili_login`），并适当调大「基础间隔」减少请求频率；风控冷却期间插件会自动退避。
 
 6. **扫码登录失败？**  
-   `/bili_login` 只能由管理员在私聊中触发，二维码有效期约 3 分钟。登录成功后凭据优先于配置里的 `SESSDATA`，失效时重新扫码即可，本插件不做自动刷新。
+   `/bili_login` 只能由管理员在私聊中触发，二维码有效期约 3 分钟。登录成功后凭据保存在 `plugin_data`，失效时重新扫码即可，本插件不做自动刷新；已有凭据只有在扫码成功后才被替换，失败时保留旧的。
 
 ## 🧪 开发与测试
 

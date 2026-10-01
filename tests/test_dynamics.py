@@ -32,7 +32,8 @@ async def test_dynamic_api_cookie_order_and_forward():
         forwarded = item(2)
         forwarded["orig"] = {"text": "不应读取原作者的调播信息"}
         return httpx.Response(200, json={"code": 0, "data": {"items": [forwarded, item(1), item(2)]}})
-    client = BiliClient(sessdata="fake-test-secret", transport=httpx.MockTransport(handler))
+    client = BiliClient(transport=httpx.MockTransport(handler))
+    client.set_credentials({"SESSDATA": "fake-test-secret"})
     try:
         posts = await client.get_latest_dynamics(1)
         assert [p.id for p in posts] == ["1", "2"]
@@ -61,9 +62,10 @@ async def test_invalid_credentials_not_retried_or_logged(caplog):
         nonlocal count
         count += 1
         return httpx.Response(200, json={"code": -101, "message": "fake-test-secret"})
-    client = BiliClient(sessdata="fake-test-secret", transport=httpx.MockTransport(handler))
+    client = BiliClient(transport=httpx.MockTransport(handler))
+    client.set_credentials({"SESSDATA": "fake-test-secret"})
     try:
-        with pytest.raises(BiliError, match="SESSDATA") as error:
+        with pytest.raises(BiliError, match="登录凭据") as error:
             await client.get_latest_dynamics(1)
         assert count == 1
         assert "fake-test-secret" not in str(error.value) + caplog.text

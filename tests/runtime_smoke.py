@@ -65,7 +65,8 @@ def main():
                         assert plugin.live_listener_task is live_task
                         assert plugin.dynamic_listener_task is dynamic_task
                         assert plugin.profile_task is profile_task
-                        assert "未配置" in ([s async for s in plugin.vt_status(Event())])[0]
+                        status = ([s async for s in plugin.vt_status(Event())])[0]
+                        assert "未登录" in status and "周表扫描时间" in status
                         toolset = build_toolset()
                         assert {tool.name for tool in toolset.tools} == {
                             "reschedule_stream", "cancel_stream", "add_stream", "update_stream_info"}
