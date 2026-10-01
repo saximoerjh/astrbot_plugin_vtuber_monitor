@@ -1,5 +1,6 @@
 """用隔离的无头浏览器截取真实动态卡片。"""
 import asyncio
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,6 +18,18 @@ DEVICE_SCALE = 2
 FONT_SCALE = 1.0
 # Chromium 单张截图的高度上限约 16000 物理像素。
 MAX_PIXEL_HEIGHT = 16000
+# B 站把表情写成 [UP_1298779265_喵] / [UPOWER_...] 这类占位符，页面上会渲染成图片，
+# 因此 inner_text() 里根本没有它们；比对正文前必须先去掉，否则带表情的动态一律误判。
+EMOJI_PLACEHOLDER = re.compile(r"\[[^\[\]]{1,32}\]")
+
+
+def text_matches(api_text, page_text):
+    """接口正文去掉表情占位符与空白后，应该出现在页面文字里。
+
+    正文只剩表情（去完占位符为空）时不作判断，交给图片完整性检查兜底。
+    """
+    expected = "".join(EMOJI_PLACEHOLDER.sub("", api_text).split())[:30]
+    return not expected or expected in "".join(page_text.split())
 
 
 def card_style():
@@ -128,8 +141,7 @@ class PinnedScreenshot:
                     }
                 }""")
                 text = "".join((await card.inner_text()).split())
-                expected = "".join(post.text.split())[:30]
-                if expected and expected not in text:
+                if not text_matches(post.text, text):
                     raise ScreenshotError("页面正文与接口动态不一致，未发送可能不完整的截图。")
                 box = await card.bounding_box()
                 if not box or box["height"] * self.scale > MAX_PIXEL_HEIGHT:

@@ -8,7 +8,15 @@ from astrbot_plugin_vtuber_monitor.bili_client import BiliClient, BiliError
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost
 from astrbot_plugin_vtuber_monitor.services.pinned_service import PinnedService
 from astrbot_plugin_vtuber_monitor.services.pinned_screenshot import (
-    DEVICE_SCALE, FONT_SCALE, PinnedScreenshot, ScreenshotError, card_script, card_style)
+    DEVICE_SCALE, FONT_SCALE, PinnedScreenshot, ScreenshotError, card_script, card_style, text_matches)
+
+
+def test_dynamic_text_check_ignores_bilibili_emoji_placeholders():
+    """最新动态常带 [UPOWER_...] 表情，页面上是图片，inner_text 里找不到占位符。"""
+    assert text_matches("节日第一天大家恰了什么[UPOWER_1298779265_星星]",
+                        "灰泽满Hazel2026年10月01日17:53节日第一天大家恰了什么")
+    assert text_matches("[UP_1_喵][UP_1_汪]", "页面只剩表情图片")
+    assert not text_matches("今天休息", "页面显示的是别的内容")
 
 
 def test_dynamic_screenshot_is_phone_readable_by_default():
