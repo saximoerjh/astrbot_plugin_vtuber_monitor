@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# 本地 agent 指令：只在本机生效，不随仓库分发
+/AGENTS.md
