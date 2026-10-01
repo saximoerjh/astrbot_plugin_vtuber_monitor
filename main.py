@@ -11,7 +11,7 @@ from .bili_client import BiliClient, BiliError
 from .core.data_manager import DataManager
 from .core.plugin_config import prepare_config
 from .core.models import DynamicPost
-from .core.schedule_models import parse_week_override
+from .core.schedule_models import china_today, parse_week_override
 from .core.schedule_diff import schedule_diff, format_diff
 from .services.adjustment_agent import AdjustmentAgent, DEFAULT_ADJUSTMENT_REGEX
 from .services.subscription_service import SubscriptionService
@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.21")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.22")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -91,6 +91,7 @@ class MyPlugin(Star):
         self.dispatcher.adjustment_enabled = bool(self.config.get("enable_adjustment_push", False))
         self.live_recorder = LiveScheduleRecorder(
             data, unfulfilled_after=timedelta(hours=float(self.config.get("unfulfilled_after_hours", 2))))
+        await self._repair_legacy_placements(data)
         self.schedules = ScheduleService(data, schedule_push=self.dispatcher.schedule_enabled,
                                         adjustment_push=self.dispatcher.adjustment_enabled,
                                         reconciler=self.live_recorder,
@@ -134,6 +135,17 @@ class MyPlugin(Star):
         dynamic_listener.bili = self.bili
         self.dynamic_listener = dynamic_listener
         self._start_tasks()
+
+    async def _repair_legacy_placements(self, data):
+        """启动兜底：旧版本把同一场直播挂到多条周表条目上，这里收敛回一条。"""
+        monday = china_today() - timedelta(days=china_today().weekday())
+        weeks = [monday.isoformat(), (monday - timedelta(days=7)).isoformat()]
+        for uid in await data.get_subscribed_uids():
+            try:
+                if await self.live_recorder.repair_placements(uid, weeks):
+                    logger.info("Repaired duplicated live placements uid=%s", uid)
+            except Exception:
+                logger.warning("Unable to repair live placements uid=%s", uid)
 
     def _start_tasks(self):
         if self.discovery.watch.scan_times and (
@@ -498,7 +510,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.21\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.22\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"

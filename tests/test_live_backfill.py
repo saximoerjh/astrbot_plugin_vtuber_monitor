@@ -363,3 +363,32 @@ async def test_reconcile_cleans_a_session_left_on_two_entries(tmp_path):
     schedule = await service.get_weekly_schedule(1)
     assert len(schedule["streams"]) == 1
     assert schedule["streams"][0]["actual_intervals"][0]["end"] == at(day, 23, 30).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_repair_placements_keeps_one_owner_and_unrelated_extras(tmp_path):
+    """启动兜底只删重复：同一场观测保留一个持有者，突击条目独立存在的不动。"""
+    data, service, recorder = await boot(tmp_path)
+    day = monday()
+    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "歌回")]))
+    await observe(data, at(day, 20), at(day, 22), title="晚间")
+    await observe(data, at(day, 8), at(day, 10), title="早间杂谈")
+    await recorder.sync(1)
+    schedule = await service.get_weekly_schedule(1)
+    assert [item["title"] for item in extras(schedule)] == ["早间杂谈"]
+    # 手工造出旧版本会留下的重复：周表那场的区间也复制到突击条目上（没有结束时间）。
+    interval = planned(schedule)[0]["actual_intervals"][0]
+    broken = json.loads(json.dumps(schedule))
+    for plan in broken["streams"]:
+        if plan.get("source") == "live_observation":
+            plan["actual_intervals"] = [*plan["actual_intervals"],
+                                        {**interval, "end": None, "end_basis": None}]
+    assert await data.save_weekly_schedule(broken, expected=schedule, source_id="",
+                                           reason="live_observation")
+    assert len(extras(await service.get_weekly_schedule(1))[0]["actual_intervals"]) == 2
+    assert await recorder.repair_placements(1, [day.isoformat()]) == 1
+    schedule = await service.get_weekly_schedule(1)
+    # 重复的那份被摘掉，独立的突击条目仍在。
+    assert [item["title"] for item in extras(schedule)] == ["早间杂谈"]
+    assert len(extras(schedule)[0]["actual_intervals"]) == 1
+    assert len(planned(schedule)[0]["actual_intervals"]) == 1

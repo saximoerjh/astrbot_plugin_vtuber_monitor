@@ -114,6 +114,42 @@ class LiveScheduleRecorder:
                 and bool(plan.get("start_time"))
                 and not plan.get("actual_intervals"))
 
+    async def repair_placements(self, uid, weeks):
+        """兜底修复：同一场观测只保留一个持有者。
+
+        正常写入路径已经保证这一点；这里只为旧版本写坏的数据收尾——
+        否则同一条直播会一边显示“已结束”、一边永远显示“直播中”。
+        只删重复，不重新匹配、不改动其他字段。
+        """
+        repaired = 0
+        for week in weeks:
+            schedule = await self.data.get_historical_schedule(uid, week)
+            if schedule is None:
+                continue
+            streams = [dict(plan) for plan in schedule["streams"]]
+            owners = {}
+            for plan in streams:
+                if plan.get("source") == EXTRA_SOURCE:
+                    continue
+                for item in plan.get("actual_intervals") or ():
+                    owners.setdefault(item["session_id"], plan["id"])
+            changed = False
+            for plan in streams:
+                intervals = plan.get("actual_intervals") or ()
+                kept = [item for item in intervals
+                        if owners.get(item["session_id"], plan["id"]) == plan["id"]]
+                if len(kept) != len(intervals):
+                    plan["actual_intervals"] = kept
+                    plan["revision"] = plan.get("revision", 0) + 1
+                    changed = True
+            trimmed = [plan for plan in streams
+                       if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")]
+            if not changed and len(trimmed) == len(streams):
+                continue
+            if await self._save(uid, week, schedule, trimmed):
+                repaired += 1
+        return repaired
+
     async def mark_unfulfilled(self, uid, now=None):
         """排期到点后仍没开播的场次记为未兑现。
 
