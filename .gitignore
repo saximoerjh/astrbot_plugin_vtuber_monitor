@@ -212,5 +212,8 @@ __marimo__/
 # 开发进度记录：只在本机保留，不随仓库分发
 /PROGRESS.md
 
+# 需求文档：只在本机保留，不随仓库分发
+/TASK.md
+
 # AstrBot 运行期目录：在插件目录里 import astrbot.core 时会就地生成
 data/
