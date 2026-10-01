@@ -18,10 +18,18 @@ def make_live_message(text, cover):
     return make_message(text).url_image(cover)
 
 
+def make_image_message(path):
+    """本地图片消息：调播通知附带的动态截图。"""
+    from astrbot.api.event import MessageChain
+
+    return MessageChain().file_image(path)
+
+
 class Dispatcher:
     def __init__(self, context, *, normal_start=True, normal_end=True,
-                 special_start=True, special_end=False,
-                 send_timeout=15, message_factory=make_message, live_message_factory=make_live_message):
+                 special_start=True, special_end=False, send_timeout=15,
+                 message_factory=make_message, live_message_factory=make_live_message,
+                 image_message_factory=make_image_message):
         if not math.isfinite(send_timeout) or send_timeout <= 0:
             raise ValueError("消息发送超时必须是正数。")
         self.context = context
@@ -32,6 +40,7 @@ class Dispatcher:
         self.send_timeout = send_timeout
         self.message_factory = message_factory
         self.live_message_factory = live_message_factory
+        self.image_message_factory = image_message_factory
         self.sent = 0
         self.failed = 0
         self._schedule_lock = asyncio.Lock()
@@ -41,7 +50,10 @@ class Dispatcher:
     async def push_schedule_updated(self, umo, text):
         return await self._send(umo, text)
 
-    async def push_schedule_adjusted(self, umo, text):
+    async def push_schedule_adjusted(self, umo, text, image_path=""):
+        """调播通知分两条发送：先动态截图，再文字结果。"""
+        if image_path:
+            await self._send_local_image(umo, image_path)
         return await self._send(umo, text)
 
     async def flush_schedule_notifications(self, data):
@@ -53,8 +65,27 @@ class Dispatcher:
                     # 直接丢弃，这样以后重新订阅也不会发出过期通知。
                     await data.finish_notification(job["id"], True)
                     continue
-                sender = self.push_schedule_updated if job["kind"] == "schedule_updated" else self.push_schedule_adjusted
-                await data.finish_notification(job["id"], await sender(job["umo"], job["message"]))
+                if job["kind"] == "schedule_updated":
+                    delivered = await self.push_schedule_updated(job["umo"], job["message"])
+                else:
+                    delivered = await self.push_schedule_adjusted(
+                        job["umo"], job["message"], job.get("image_path", ""))
+                await data.finish_notification(job["id"], delivered)
+
+    async def _send_local_image(self, umo, path):
+        """发送本地截图；失败只记录，不算整条通知失败。"""
+        validate_umo(umo)
+        try:
+            result = await asyncio.wait_for(
+                self.context.send_message(umo, self.image_message_factory(path)), self.send_timeout)
+            if result is False:
+                raise RuntimeError("Platform rejected the notification image")
+        except Exception:
+            self.failed += 1
+            logger.exception("VTuber notification image delivery failed")
+            return False
+        self.sent += 1
+        return True
 
     async def _send(self, umo, text, cover=""):
         validate_umo(umo)

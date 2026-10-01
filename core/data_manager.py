@@ -111,6 +111,7 @@ class DataManager:
                 CREATE TABLE IF NOT EXISTS schedule_outbox (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL,
                     umo TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL,
+                    image_path TEXT NOT NULL DEFAULT '',
                     attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending'
                 );
                 CREATE TABLE IF NOT EXISTS greeting_history (
@@ -126,6 +127,9 @@ class DataManager:
                 session_columns = {row["name"] for row in db.execute("PRAGMA table_info(live_sessions)")}
                 if "title" not in session_columns:
                     db.execute("ALTER TABLE live_sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+                outbox_columns = {row["name"] for row in db.execute("PRAGMA table_info(schedule_outbox)")}
+                if "image_path" not in outbox_columns:
+                    db.execute("ALTER TABLE schedule_outbox ADD COLUMN image_path TEXT NOT NULL DEFAULT ''")
                 alias_columns = list(db.execute("PRAGMA table_info(streamer_aliases)"))
                 if any(row["name"] == "uid" and row["pk"] for row in alias_columns):
                     db.execute("""CREATE TABLE streamer_aliases_multi (
@@ -238,6 +242,22 @@ class DataManager:
             temporary.write_bytes(content)
             os.replace(temporary, path)
             return str(path.resolve())
+        return await asyncio.to_thread(write)
+
+    async def save_notice_image(self, uid, dynamic_id, content):
+        """通知附带的动态截图；同一张图按内容哈希去重复用。"""
+        validate_uid(uid)
+        key = hashlib.sha256(f"notice:{uid}:{dynamic_id}:".encode() + content).hexdigest()
+        suffix = ".png" if content.startswith(b"\x89PNG") else ".webp" if content.startswith(b"RIFF") else ".jpg"
+        path = self.path.parent / "notice_images" / f"{key}{suffix}"
+
+        def write():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_bytes(content)
+            os.replace(temporary, path)
+            return str(path.resolve())
+
         return await asyncio.to_thread(write)
 
     async def get_schedule_tracking(self, uid):
@@ -374,9 +394,12 @@ class DataManager:
             db.execute("INSERT INTO schedule_revisions (uid, old_value, new_value, source_dynamic_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                        (uid, row[0] if row else None, payload, source_id, reason, utc_now()))
             if notification:
-                kind, message = notification
-                db.execute("INSERT INTO schedule_outbox (uid, umo, kind, message) SELECT uid, umo, ?, ? FROM subscriptions WHERE uid=? AND level='special'",
-                           (kind, message, uid))
+                # 通知可选带一张本地图片（调播通知附触发它的动态截图）。
+                kind, message, *rest = notification
+                image_path = rest[0] if rest else ""
+                db.execute("INSERT INTO schedule_outbox (uid, umo, kind, message, image_path)"
+                           " SELECT uid, umo, ?, ?, ? FROM subscriptions WHERE uid=? AND level='special'",
+                           (kind, message, image_path, uid))
             return True
         return await asyncio.to_thread(self._run, write)
 

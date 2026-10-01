@@ -9,19 +9,23 @@ from datetime import date, timedelta
 
 from ..core.schedule_models import validate_schedule, china_today, WeeklySchedule, StreamPlan
 from ..core.models import validate_uid, utc_now
-from ..core.schedule_diff import align_streams, schedule_diff, format_diff
+from ..core.schedule_diff import (align_streams, format_adjustment_notice, format_diff,
+                                  schedule_diff)
 
 logger = logging.getLogger(__name__)
 
 
 class ScheduleService:
-    def __init__(self, data, *, schedule_push=False, adjustment_push=False, reconciler=None):
+    def __init__(self, data, *, schedule_push=False, adjustment_push=False, reconciler=None,
+                 notice_image=None):
         self.data = data
         self.schedule_push = schedule_push
         self.adjustment_push = adjustment_push
         # 可选的直播落位器：刚保存的周表会回填
         # 在该周周表发布之前发生的观测。
         self.reconciler = reconciler
+        # 可选：为调播通知提供触发它的动态截图，返回本地路径。
+        self.notice_image = notice_image
 
     async def replace_weekly_schedule(self, schedule, *, import_key=""):
         validate_schedule(schedule)
@@ -133,7 +137,17 @@ class ScheduleService:
         if not changes:
             return {"success": False, "before": old, "after": old, "changes": [], "reason": "无需修改"}
         content["revision"] = old.get("revision", 0) + 1
-        notification = ("schedule_adjusted", f"UID {uid} 调播生效\n{format_diff(changes)}\n原因：{reason[:500]}") if self.adjustment_push else None
+        notification = None
+        if self.adjustment_push:
+            # 附上触发调播的那条动态截图；截不到就只发文字。
+            image_path = ""
+            if self.notice_image is not None and source_dynamic_id and not dry_run:
+                try:
+                    image_path = await self.notice_image(uid, source_dynamic_id) or ""
+                except Exception:
+                    logger.warning("Adjustment notice screenshot failed uid=%s", uid)
+            notification = ("schedule_adjusted",
+                            format_adjustment_notice(uid, changes, reason), image_path)
         success = dry_run or await self.data.save_weekly_schedule(
             content, expected=old, source_id=source_dynamic_id, reason=reason,
             operation_id=operation_id, notification=notification)

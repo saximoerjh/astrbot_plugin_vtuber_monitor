@@ -73,14 +73,56 @@ def schedule_diff(before, after):
 
 def format_diff(changes):
     labels = {"added": "新增", "removed": "删除", "time": "时间", "actual": "实际直播", "title": "标题", "status": "状态"}
-    statuses = {"scheduled": "已排期", "postponed": "改期", "cancelled": "取消", "unknown": "待定",
-                "completed": "完成", UNFULFILLED_STATUS: "未兑现"}
     def describe(s):
         if s is None:
             return "无"
         original = s.get('original_start_time', s['start_time']) or 'unknown'
         if s.get('original_end_time'):
             original += '–' + s['original_end_time']
-        return f"{s['date']} {s['start_time'] or '时间待定'} {s['title']}（原定 {original}） [{statuses.get(s['status'], s['status'])}]"
+        return f"{s['date']} {s['start_time'] or '时间待定'} {s['title']}（原定 {original}） [{STATUS_LABELS.get(s['status'], s['status'])}]"
     return "\n".join(f"{'/'.join(labels[k] for k in c['kinds'])}：{describe(c['before'])} → {describe(c['after'])}"
                      for c in changes[:20]) + ("\n（仅展示前 20 项）" if len(changes) > 20 else "")
+
+
+STATUS_LABELS = {"scheduled": "已排期", "postponed": "改期", "cancelled": "取消", "unknown": "待定",
+                 "completed": "完成", UNFULFILLED_STATUS: "未兑现"}
+ACTION_LABELS = {"cancel": "取消", "reschedule": "改期", "add": "新增", "title": "改标题", "remove": "删除"}
+
+
+def _brief(plan):
+    day = (plan.get("date") or "")[5:]
+    return f"{day} {plan.get('start_time') or '待定'} {(plan.get('title') or '').strip()}"
+
+
+def summarize_change(change):
+    """把一条变更压成一行，只保留“哪一场、变成什么”。"""
+    before, after = change.get("before") or {}, change.get("after") or {}
+    kinds = change.get("kinds") or []
+    plan = after or before
+    if "added" in kinds:
+        return f"{_brief(plan)} 新增"
+    if "removed" in kinds:
+        return f"{_brief(plan)} 删除"
+    if "status" in kinds and after.get("status") == "cancelled":
+        return f"{_brief(plan)} 取消"
+    if "time" in kinds:
+        return f"{_brief(before)} 改期到 {_brief(after)}"
+    if "title" in kinds:
+        return f"{_brief(before)} 改标题为「{(after.get('title') or '').strip()}」"
+    if "status" in kinds:
+        return f"{_brief(plan)} 状态改为 {STATUS_LABELS.get(after.get('status'), after.get('status'))}"
+    return f"{_brief(plan)} 更新"
+
+
+def format_adjustment_notice(uid, changes, reason="", *, limit=5, reason_limit=60):
+    """调播通知正文：只列改动与一句依据，详细对比留给 /vt_revisions。"""
+    lines = [f"UID {uid} 调播生效"]
+    items = list(changes or [])
+    for change in items[:limit]:
+        lines.append("· " + summarize_change(change))
+    if len(items) > limit:
+        lines.append(f"（另有 {len(items) - limit} 条，见 /vt_revisions）")
+    text = " ".join((reason or "").split())
+    if text:
+        lines.append("依据：" + (text[:reason_limit] + "…" if len(text) > reason_limit else text))
+    return "\n".join(lines)

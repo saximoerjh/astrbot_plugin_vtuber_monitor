@@ -76,6 +76,12 @@ def message_parts(parts):
              *([Image.fromBytes(part.image)] if part.image is not None else [])] for part in parts]
 
 
+def image_then_text(raw, text):
+    """单条消息：图片在前、文字在后（命令回复用）。"""
+    from astrbot.api.message_components import Image, Plain
+    return [*([Image.fromBytes(raw)] if raw else []), *([Plain(text)] if text else [])]
+
+
 def forward_chain(parts, sender_id):
     from astrbot.api.message_components import Node, Nodes
     return [Nodes([Node(uin=str(sender_id), name="VTuber Monitor", content=content)

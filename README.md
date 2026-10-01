@@ -68,7 +68,7 @@ plugin i https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
 | **vt_schedule_history** | `<UID或别名>` | 列出已缓存的周次 | 所有人 |
 | **vt_revisions** | `<UID或别名>` | 查看最近十次周表修订 | 所有人 |
 | **vt_live** | `<UID或别名>` | 查询直播状态，不触发通知 | 所有人 |
-| **vt_latest** | `<UID或别名>` | 查询最新动态，不修改检查点 | 所有人 |
+| **vt_latest** | `<UID或别名>` | 查询最新动态的卡片截图，不修改检查点 | 所有人 |
 | **vt_pinned** | `<UID或别名>` | 合并转发置顶动态截图与周表图 | 所有人 |
 | **vt_4016** | (无) | 看看现在哪个国家是凌晨四点 | 所有人 |
 | **vt_status** | (无) | 查看监听状态与计数 | 所有人 |
@@ -100,7 +100,9 @@ plugin i https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
 
 ### 通知怎么发
 
-上下播通知在**状态跳变时**发送一次：开播推「开播了」并附标题、封面与直播间链接，下播推「下播了」。改标题或换封面不会重复触发。周表更新通知与调播结果通知走动态轮询投递，默认关闭，可在「通知内容」里打开。
+上下播通知在**状态跳变时**发送一次：开播推「开播了」并附标题、封面与直播间链接，下播推「下播了」。改标题或换封面不会重复触发。
+
+周表更新通知与调播结果通知走动态轮询投递，默认关闭，可在「通知内容」里打开。**调播通知分两条发送**：先发触发这次调播的**动态截图**，再发精简结果（每场一行改动 + 一句依据）；截图失败只发文字。多个会话复用同一张截图。
 
 ## ❓ 常见问题
 
@@ -135,7 +137,7 @@ python tests/runtime_smoke.py
 python tests/render_preview.py --live 1512246445
 ```
 
-运行期数据都在 `plugin_data/astrbot_plugin_vtuber_monitor/`：`monitor.sqlite3`（订阅、周表、实际直播）、`schedule_images/`（周表原图）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存）、`login_qr/`。缓存目录都有上限或按内容哈希去重。
+运行期数据都在 `plugin_data/astrbot_plugin_vtuber_monitor/`：`monitor.sqlite3`（订阅、周表、实际直播）、`schedule_images/`（周表原图）、`notice_images/`（调播通知附带的动态截图）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存）、`login_qr/`。缓存目录都有上限或按内容哈希去重。
 
 ## 📄 许可
 

@@ -27,7 +27,7 @@ from .services.schedule_discovery import ScheduleDiscovery, DEFAULT_KEYWORDS
 from .services.schedule_watch import DEFAULT_SCAN_TIMES
 from .services.target_service import TargetService
 from .services.pinned_screenshot import PinnedScreenshot
-from .services.pinned_service import PinnedService, forward_chain, message_parts
+from .services.pinned_service import PinnedService, forward_chain, image_then_text, message_parts
 from .services.profile_service import ProfileService
 from .services.schedule_image_selector import ScheduleImageSelector
 from .services.schedule_report import format_schedule_report
@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.19")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.20")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -71,6 +71,7 @@ class MyPlugin(Star):
             self.context, data,
             self.config.get("multimodal_provider_id", ""))
         screenshot = PinnedScreenshot(self.config.get("screenshot_browser_channel", "auto"))
+        self.screenshot = screenshot
         self.schedule_renderer = ScheduleRenderer(
             data_dir, channel=self.config.get("screenshot_browser_channel", "auto"))
         self.dispatcher = Dispatcher(
@@ -92,7 +93,8 @@ class MyPlugin(Star):
             data, unfulfilled_after=timedelta(hours=float(self.config.get("unfulfilled_after_hours", 2))))
         self.schedules = ScheduleService(data, schedule_push=self.dispatcher.schedule_enabled,
                                         adjustment_push=self.dispatcher.adjustment_enabled,
-                                        reconciler=self.live_recorder)
+                                        reconciler=self.live_recorder,
+                                        notice_image=self._adjustment_notice_image)
         self.adjustment = AdjustmentAgent(
             self.context, self.schedules,
             self.config.get("multimodal_provider_id", ""),
@@ -255,18 +257,27 @@ class MyPlugin(Star):
 
     @filter.command("vt_latest")
     async def vt_latest(self, event: AstrMessageEvent, uid: str = ""):
-        """查询最新动态，不修改检查点。"""
+        """查询最新动态截图，不修改检查点。"""
         try:
             uid = await self._resolve_target(event, uid)
             posts = await self.bili.get_latest_dynamics(uid)
             if not posts:
-                text = "未查询到动态。"
+                yield event.plain_result("未查询到动态。")
+                return
+            post = posts[-1]
+            link = f"https://t.bilibili.com/{post.id}"
+            try:
+                raw = await self.screenshot.capture(post, self.bili.browser_cookies())
+            except Exception:
+                logger.warning("Latest dynamic screenshot failed uid=%s", uid)
+                raw = None
+            if raw:
+                yield event.chain_result(image_then_text(raw, f"动态 {post.id}\n{link}"))
             else:
-                post = posts[-1]
-                text = f"动态 {post.id}\n{post.text[:1000] or '（无正文）'}\nhttps://t.bilibili.com/{post.id}"
+                text = f"动态 {post.id}\n{post.text[:1000] or '（无正文）'}\n{link}"
+                yield event.plain_result(f"动态截图未生成，以下为正文：\n{text}")
         except (ValueError, BiliError) as exc:
-            text = str(exc)
-        yield event.plain_result(text)
+            yield event.plain_result(str(exc))
 
     @filter.command("vt_pinned")
     async def vt_pinned(self, event: AstrMessageEvent, uid: str = ""):
@@ -370,6 +381,12 @@ class MyPlugin(Star):
         if row is None:
             return f"UID {uid}"
         return (row.get("name") or "").strip() or f"UID {uid}"
+
+    async def _adjustment_notice_image(self, uid, dynamic_id):
+        """调播通知附带的动态截图：截一次、所有会话复用；失败由调用方退回纯文字。"""
+        post = await self.bili.get_dynamic(uid, dynamic_id)
+        raw = await self.screenshot.capture(post, self.bili.browser_cookies())
+        return await self.discovery.data.save_notice_image(uid, dynamic_id, raw)
 
     @filter.command("vt_schedule_history")
     async def vt_schedule_history(self, event: AstrMessageEvent, uid: str = ""):
@@ -482,7 +499,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         yield event.plain_result(
-            f"VTuber Monitor 0.7.19\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
+            f"VTuber Monitor 0.7.20\n直播监听：{'运行中' if running else '已停止/未启用'}\n"
             f"轮询间隔：{listener.interval:g}–{listener.interval + listener.jitter:g} 秒；已完成 {listener.rounds} 轮\n"
             f"风控冷却剩余：{listener.cooldown_remaining:.0f} 秒\n"
             f"直播监听范围：{'特别关注' if listener.special_only else '全部订阅'}\n"
