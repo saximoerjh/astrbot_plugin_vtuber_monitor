@@ -1,6 +1,5 @@
 """Bilibili 异步请求；绝不记录凭据或响应体。"""
 import asyncio
-import logging
 import math
 import time
 from datetime import datetime, timezone
@@ -10,25 +9,13 @@ from http.cookies import SimpleCookie
 
 import httpx
 
+from astrbot.api import logger
+
+from .core.httpx_logs import install as install_httpx_redaction
 from .core.models import DynamicPost, VtuberState, validate_uid
 
-logger = logging.getLogger(__name__)
-
-
-class _LoginUrlRedactor(logging.Filter):
-    """httpx 的 INFO 日志通常包含扫码密钥与跨域票据。"""
-    def filter(self, record):
-        if isinstance(record.args, tuple):
-            record.args = tuple(
-                value.copy_with(query=None) if isinstance(value, httpx.URL) and value.host in
-                ("passport.bilibili.com", "passport.biligame.com", "account.bilibili.com") else value
-                for value in record.args
-            )
-        return True
-
-
-if not any(isinstance(item, _LoginUrlRedactor) for item in logging.getLogger("httpx").filters):
-    logging.getLogger("httpx").addFilter(_LoginUrlRedactor())
+# httpx 自己的日志走标准库，这里只负责给它的 logger 挂脱敏过滤器。
+install_httpx_redaction()
 
 
 class BiliError(Exception):

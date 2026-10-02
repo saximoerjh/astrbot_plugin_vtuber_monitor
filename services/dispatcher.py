@@ -1,11 +1,10 @@
 """与平台无关的主动通知，按目标会话相互隔离。"""
 import asyncio
-import logging
 import math
 
-from ..core.models import FollowLevel, validate_umo
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from ..core.models import FollowLevel, validate_umo
 
 
 def make_message(text):

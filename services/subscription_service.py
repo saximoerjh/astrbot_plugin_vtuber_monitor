@@ -1,7 +1,6 @@
-from ..core.models import FollowLevel, validate_uid, validate_umo
-import logging
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from ..core.models import FollowLevel, validate_uid, validate_umo
 
 
 class SubscriptionService:

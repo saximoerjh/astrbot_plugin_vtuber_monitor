@@ -1,14 +1,13 @@
 """挑一个此刻正处于 04:00–05:00 的国家或地区，交给模型造句。"""
 import asyncio
 import json
-import logging
 import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from ..core.countries import COUNTRIES, WINDOW_END, WINDOW_START
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from ..core.countries import COUNTRIES, WINDOW_END, WINDOW_START
 
 CHINA = timezone(timedelta(hours=8))
 NAME = "小路泥"

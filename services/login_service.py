@@ -1,11 +1,10 @@
 """同一时间只允许一个管理员私聊扫码登录；消息与日志里不得出现凭据。"""
 import asyncio
-import logging
 import time
 
-from ..bili_client import BiliClient, BiliError
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from ..bili_client import BiliClient, BiliError
 
 
 class LoginService:

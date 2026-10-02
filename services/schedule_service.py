@@ -1,5 +1,4 @@
 """所有被接受的周表写入都必须经过这一层服务。"""
-import logging
 import re
 import hashlib
 import json
@@ -7,12 +6,12 @@ import uuid
 from dataclasses import replace
 from datetime import date, timedelta
 
+from astrbot.api import logger
+
 from ..core.schedule_models import validate_schedule, china_today, WeeklySchedule, StreamPlan
 from ..core.models import validate_uid, utc_now
 from ..core.schedule_diff import (align_streams, format_adjustment_notice, format_diff,
                                   schedule_diff)
-
-logger = logging.getLogger(__name__)
 
 
 class ScheduleService:

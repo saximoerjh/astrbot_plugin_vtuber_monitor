@@ -1,14 +1,14 @@
 """每轮轮询每个订阅主播一次；只落库观测到的状态变化。"""
 import asyncio
-import logging
 import math
 import random
 import time
+
+from astrbot.api import logger
+
 from ..bili_client import BiliRateLimited
 
 from ..core.models import VtuberState, FollowLevel, utc_now
-
-logger = logging.getLogger(__name__)
 
 
 class LiveListener:

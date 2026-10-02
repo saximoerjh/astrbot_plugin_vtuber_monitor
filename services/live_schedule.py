@@ -7,16 +7,15 @@
 """
 import asyncio
 import json
-import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+
+from astrbot.api import logger
 
 from ..core.data_manager import (LIVE_SESSION_PENDING, LIVE_SESSION_RECORDED,
                                  LIVE_SESSION_SKIPPED)
 from ..core.schedule_models import (UNFULFILLED_STATUS, StreamPlan, WeeklySchedule,
                                     is_pending_title, validate_schedule)
-
-logger = logging.getLogger(__name__)
 
 CHINA = timezone(timedelta(hours=8))
 MATCH_TOLERANCE = timedelta(hours=1)

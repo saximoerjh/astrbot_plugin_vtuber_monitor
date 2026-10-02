@@ -8,18 +8,18 @@ BiliClient 的 CDN 下载（带域名、类型与大小校验）。
 import asyncio
 import base64
 import json
-import logging
 import random
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from astrbot.api import logger
+
 from ..bili_client import BiliError
 from ..core.models import validate_uid
 from ..core.schedule_models import china_today
 
-logger = logging.getLogger(__name__)
 CHINA = timezone(timedelta(hours=8))
 ASSET_LIMIT = 2 * 1024 * 1024
 # 空间页给的地址带宽高后缀；按用途改成够用的小图，避免把整页图塞进 HTML。

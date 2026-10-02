@@ -1,12 +1,11 @@
 """先持久化；把可恢复的调播任务与 Bilibili 读取分开处理。"""
 import asyncio
 import json
-import logging
 import math
 
-from ..core.models import DynamicPost, utc_now
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from ..core.models import DynamicPost, utc_now
 
 
 class DynamicListener:

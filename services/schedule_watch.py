@@ -5,15 +5,15 @@
 """
 import asyncio
 import hashlib
-import logging
 import re
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 
+from astrbot.api import logger
+
 from ..core.schedule_models import StreamPlan, WeeklySchedule, china_today
 
 CHINA = timezone(timedelta(hours=8))
-log = logging.getLogger(__name__)
 
 DEFAULT_SCAN_TIMES = ("00:30", "12:30", "20:30")
 # 每轮最多看几条候选动态（置顶另算）。
@@ -117,7 +117,7 @@ class ScheduleWatch:
             except Exception:
                 # 不暴露模型错误与 Cookie；保留已采用的周表和任务。
                 state.update(checked_slot=slot, error="检查或解析失败，保留原周表，下次检查重试")
-                log.warning("Schedule scan failed uid=%s", uid)
+                logger.warning("Schedule scan failed uid=%s", uid)
             await self.data.save_schedule_tracking(uid, state)
 
     async def _scan_once(self, uid, state, now, slot):
@@ -228,7 +228,7 @@ class ScheduleWatch:
             try:
                 await self.check(uid, now=now, special=uid in specials)
             except Exception:
-                log.warning("Unable to scan schedule uid=%s", uid)
+                logger.warning("Unable to scan schedule uid=%s", uid)
 
     async def run(self):
         while True:
@@ -236,7 +236,7 @@ class ScheduleWatch:
                 # 启动与每个时间点都跑一轮；同一时间点由 checked_slot 去重。
                 await self.run_once()
             except Exception:
-                log.warning("Unable to enumerate schedule subscriptions")
+                logger.warning("Unable to enumerate schedule subscriptions")
             target = next_scan_at(datetime.now(CHINA), self.scan_times)
             if target is None:
                 return
