@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.33")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.34")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -507,7 +507,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
-        lines = ["VTuber Monitor 0.7.33"]
+        lines = ["VTuber Monitor 0.7.34"]
         if listener is None:
             lines.append("直播监听：未启用")
         else:

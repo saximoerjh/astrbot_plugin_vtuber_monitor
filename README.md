@@ -155,7 +155,7 @@ python tests/dynamic_preview.py --variants
 
 运行期数据都在 `plugin_data/astrbot_plugin_vtuber_monitor/`：`monitor.sqlite3`（订阅、周表、实际直播）、`schedule_images/`（周表原图）、`notice_images/`（调播通知附带的动态截图）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存）、`login_qr/`。缓存目录都有上限或按内容哈希去重。
 
-仓库根目录的 `logo.png`（256×256）是 WebUI 插件卡片上的图标，AstrBot 按固定文件名读取，`metadata.yaml` 里没有对应字段；这张图由 `docs/4016.png` 裁出，改 `tools/make_logo.py` 的 `CROP`／`RADIUS` 再跑一次即可重新生成。
+仓库根目录的 `logo.png`（256×256）是 WebUI 插件卡片上的图标，AstrBot 按固定文件名读取，`metadata.yaml` 里没有对应字段；这张图由 `docs/4016_monitor.png` 裁出（脚本自动去掉四周同色留白），改 `tools/make_logo.py` 的 `SOURCE`／`RADIUS`／`PADDING` 再跑一次即可重新生成。
 
 ## 📄 许可
 
