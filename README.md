@@ -1,6 +1,10 @@
-# astrbot_plugin_vtuber_monitor
+<p align="center">
+  <img src="logo.png" width="132" alt="VTuber 直播与周表助手插件图标">
+</p>
 
-为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的 Bilibili VTuber 直播与周表追踪插件：订阅主播后自动推送上下播、解析并维护周表，必要时根据动态自动调播。
+<h1 align="center">astrbot_plugin_vtuber_monitor</h1>
+
+<p align="center">为 <a href="https://github.com/AstrBotDevs/AstrBot">AstrBot</a> 设计的 Bilibili VTuber 直播与周表追踪插件：订阅主播后自动推送上下播、解析并维护周表，必要时根据动态自动调播。</p>
 
 ## ✨ 功能特性
 
