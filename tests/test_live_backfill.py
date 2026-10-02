@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -38,6 +39,23 @@ async def boot(tmp_path):
     await data.initialize()
     recorder = LiveScheduleRecorder(data)
     return data, ScheduleService(data, reconciler=recorder), recorder
+
+
+def set_import_time(data, schedule, imported):
+    """把这一周的首次导入时间设成 imported（归档表最早那行）。"""
+    with sqlite3.connect(data.path) as db:
+        db.execute("UPDATE weekly_schedule_archive SET archived_at=? WHERE uid=? AND week_start=?",
+                   (imported.isoformat(), schedule.uid, schedule.week_start))
+
+
+async def store(data, service, schedule, imported):
+    """存周表，并把首次导入时间设成 imported，模拟真实的解析节奏。
+
+    未兑现判定要求周表在这场排期开播之前就解析到；测试里刚存下的周表导入时间
+    就是"现在"，所以显式指定，免得测试结果随运行时刻改变。
+    """
+    await service.store_parsed_schedule(schedule)
+    set_import_time(data, schedule, imported)
 
 
 async def observe(data, start, end, title=""):
@@ -216,10 +234,49 @@ def test_pending_title_matches_placeholders_but_not_real_programmes():
 
 
 @pytest.mark.asyncio
+async def test_stream_before_the_schedule_was_imported_is_not_marked(tmp_path):
+    """周一早上的场次，周表到周二零点才解析到：插件当时根本不知道有这场排期。
+
+    这正是线上遇到的情况——主播照常播了，只是那段时间插件没在观测，
+    事后也回补不了，所以不能据此判“未兑现”。
+    """
+    data, service, recorder = await boot(tmp_path)
+    day = monday()
+    await store(data, service, poster(day, [("08:00", "10:00", "音乐分享电台")]),
+                at(day + timedelta(days=1), 0, 6))
+    assert await recorder.mark_unfulfilled(1, now=at(day + timedelta(days=2), 22)) == 0
+    stream = planned(await service.get_weekly_schedule(1))[0]
+    assert stream["status"] == "scheduled"
+    assert (await recorder.week_summary(1, day.isoformat()))["unfulfilled"] == 0
+    # 判定线之后导入的场次照常判定：换一场排在导入之后的。
+    later = day + timedelta(days=2)
+    await store(data, service, poster(later, [("21:00", "23:00", "晚播")]), at(day, 12))
+    assert await recorder.mark_unfulfilled(1, now=at(later, 23, 30)) == 1
+    assert planned(await service.get_weekly_schedule(1))[0]["status"] == "unfulfilled"
+
+
+@pytest.mark.asyncio
+async def test_old_wrong_mark_is_cleared_when_the_schedule_arrived_later(tmp_path):
+    """旧版本留下的误判不是永久留红：同一轮判定会把"晚于场次才解析到"的标记撤销。"""
+    data, service, recorder = await boot(tmp_path)
+    day = monday()
+    schedule = poster(day, [("08:00", "10:00", "音乐分享电台")])
+    await store(data, service, schedule, at(day, 0))
+    # 周表在开播前就解析到了 → 正常判未兑现。
+    assert await recorder.mark_unfulfilled(1, now=at(day, 22)) == 1
+    # 但真实的首次导入时间是次日凌晨（线上遇到的那种），标记应被撤销。
+    set_import_time(data, schedule, at(day + timedelta(days=1), 0, 6))
+    assert await recorder.mark_unfulfilled(1, now=at(day + timedelta(days=2), 22)) == 0
+    stream = planned(await service.get_weekly_schedule(1))[0]
+    assert stream["status"] == "scheduled"
+    assert (await recorder.week_summary(1, day.isoformat()))["unfulfilled"] == 0
+
+
+@pytest.mark.asyncio
 async def test_scheduled_stream_without_broadcast_is_marked_unfulfilled(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "晚播")]))
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
     # 到点两小时整即可判定；提前一分钟还不能判。
     assert await recorder.mark_unfulfilled(1, now=at(day, 21, 59)) == 0
     assert planned(await service.get_weekly_schedule(1))[0]["status"] == "scheduled"
@@ -236,10 +293,10 @@ async def test_scheduled_stream_without_broadcast_is_marked_unfulfilled(tmp_path
 async def test_rescheduled_or_unpromised_streams_are_not_marked(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [
+    await store(data, service, poster(day, [
         ("20:00", "22:00", "晚播"),
         (None, None, "待定联动"),
-    ]))
+    ]), at(day, 12))
     # 第一条被动态调播、第三条时间待定，都不参与未兑现判定。
     await service.reschedule_stream(1, planned(await service.get_weekly_schedule(1))[0]["id"],
                                     day.isoformat(), "22:30", "推迟")
@@ -255,7 +312,7 @@ async def test_rescheduled_or_unpromised_streams_are_not_marked(tmp_path):
 async def test_late_broadcast_same_day_revokes_the_unfulfilled_mark(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "晚播")]))
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
     stream = planned(await service.get_weekly_schedule(1))[0]
     assert stream["status"] == "unfulfilled"
@@ -276,7 +333,7 @@ async def test_late_broadcast_same_day_revokes_the_unfulfilled_mark(tmp_path):
 async def test_next_day_broadcast_does_not_revoke_the_mark(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "晚播")]))
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
     # 次日才补播：未兑现定稿，补播另记突击条目。
     await observe(data, at(day + timedelta(days=1), 21), at(day + timedelta(days=1), 23))
@@ -290,9 +347,9 @@ async def test_next_day_broadcast_does_not_revoke_the_mark(tmp_path):
 async def test_reparse_keeps_unfulfilled_state(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "晚播")]))
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "晚播")], dynamic_id="903"))
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")], dynamic_id="903"), at(day, 12))
     assert planned(await service.get_weekly_schedule(1))[0]["status"] == "unfulfilled"
 
 
@@ -305,7 +362,7 @@ async def test_backfill_takes_the_session_off_the_surprise_entry(tmp_path):
     """
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("19:00", "21:00", "随便看看")]))
+    await store(data, service, poster(day, [("19:00", "21:00", "随便看看")]), at(day, 12))
     await data.save_vtuber_state(VtuberState(1, "主播", 10, True, live_title="不要笑挑战",
                                              live_started_at=at(day, 21, 39).isoformat()))
     await recorder.sync(1, now=at(day, 21, 40))
@@ -337,7 +394,7 @@ async def test_reconcile_cleans_a_session_left_on_two_entries(tmp_path):
     """修复前写坏的数据（同一次直播挂在两条上）在重新落位后必须收敛成一条。"""
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("19:00", "21:00", "随便看看")]))
+    await store(data, service, poster(day, [("19:00", "21:00", "随便看看")]), at(day, 12))
     await data.save_vtuber_state(VtuberState(1, "主播", 10, True, live_title="不要笑挑战",
                                              live_started_at=at(day, 21, 39).isoformat()))
     await recorder.sync(1, now=at(day, 21, 40))

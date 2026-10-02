@@ -154,6 +154,8 @@ class LiveScheduleRecorder:
 
         只处理「场次自己所在的周」，因为周日 23:00 的场次到点两小时已经跨周，
         那时它属于上一周的周表。已经在直播轮询里，所以不额外起任务。
+        另外只在周表**早于该场次开播**就解析到的情况下才判：解析之前的日子插件
+        根本不知道有这个排期，也没有观测可以回补，判成未兑现就是误伤。
         """
         now = now or datetime.now(CHINA)
         today = now.date()
@@ -162,14 +164,27 @@ class LiveScheduleRecorder:
             schedule = await self.data.get_historical_schedule(uid, week)
             if schedule is None:
                 continue
+            imported = self._imported_at(await self.data.schedule_imported_at(uid, week))
             streams = [dict(plan) for plan in schedule["streams"]]
             changed = False
             count = 0
             for plan in streams:
+                planned = self._planned_start(plan)
+                if plan.get("status") == UNFULFILLED_STATUS:
+                    # 旧版本按“没观测到就判”写下的错标记：周表其实是这场之后才
+                    # 解析到的，同一轮里撤销，免得永久留红。
+                    if imported is not None and planned is not None and planned < imported:
+                        plan["status"] = "scheduled"
+                        plan["revision"] = plan.get("revision", 0) + 1
+                        changed = True
+                    continue
                 if not self.awaiting_start(plan):
                     continue
-                planned = self._planned_start(plan)
                 if planned is None or now < planned + self.unfulfilled_after:
+                    continue
+                if imported is None or planned < imported:
+                    # 周表是这场排期结束之后才解析到的：插件当时没在看着这一场，
+                    # 事后也无法从接口回补，保持原状不判。
                     continue
                 plan["status"] = UNFULFILLED_STATUS
                 plan["revision"] = plan.get("revision", 0) + 1
@@ -210,6 +225,15 @@ class LiveScheduleRecorder:
         if not plan.get("start_time"):
             return None
         return datetime.fromisoformat(f"{plan['date']}T{plan['start_time']}:00").replace(tzinfo=CHINA)
+
+    @staticmethod
+    def _imported_at(value):
+        """把周表首次导入时间解析成带时区的 datetime；取不到或格式不对按未知处理。"""
+        try:
+            moment = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+        return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
     def _nearest(self, streams, session):
         """容差内同一天最近的场次；有具体时间的场次优先于待定场次。"""

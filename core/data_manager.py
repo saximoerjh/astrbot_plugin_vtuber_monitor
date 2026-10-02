@@ -338,6 +338,17 @@ class DataManager:
             (validate_uid(uid), week_start)).fetchone())
         return json.loads(row[0]) if row else None
 
+    async def schedule_imported_at(self, uid, week_start):
+        """这一周周表最早一次写进来的时间（= 首次导入时间）；没有记录返回 None。
+
+        归档表每次写入都会追加一行，所以最早那行的 archived_at 就是首次导入时间，
+        后面的修订不会把它往后推。
+        """
+        row = await asyncio.to_thread(self._run, lambda db: db.execute(
+            "SELECT archived_at FROM weekly_schedule_archive WHERE uid=? AND week_start=? ORDER BY id LIMIT 1",
+            (validate_uid(uid), week_start)).fetchone())
+        return row[0] if row else None
+
     async def remove_subscription(self, uid: int, umo: str) -> bool:
         args = (validate_uid(uid), validate_umo(umo))
         def remove(db):
