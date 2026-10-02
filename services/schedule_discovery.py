@@ -5,6 +5,8 @@ from datetime import timedelta
 from pathlib import Path
 from dataclasses import replace
 
+from astrbot.api import logger
+
 from ..core.models import utc_now, validate_uid
 from ..core.schedule_models import china_today, explicit_week_hint, parse_week_override
 from .schedule_parser import ScheduleParseError
@@ -40,7 +42,6 @@ class ScheduleDiscovery:
             previous = {(r["dynamic_id"], r["image_url"]): r for r in await self.data.get_schedule_candidates(uid)}
             results = []
             remembered = False
-            tracking = await self.data.get_schedule_tracking(uid)
             # 扫描整页，包括动态水位线之外的旧置顶动态。
             for post in sorted(posts, key=lambda p: int(p.id), reverse=True):
                 if not self.is_candidate(post):
@@ -48,6 +49,11 @@ class ScheduleDiscovery:
                 for image_index, url in enumerate(post.images, 1):
                     old = previous.get((post.id, url))
                     fingerprint = hashlib.sha256(post.text.encode()).hexdigest()
+                    if (not force and old and old.get("error_code") == "not_schedule"
+                            and old.get("text_fingerprint") == fingerprint):
+                        # 已经判定过"不是周表"，正文也没变：不再下载、不再花模型。
+                        # 这样清理掉这类候选图之后也不会重新拉一遍。
+                        continue
                     if (old and not force and not week_start and old.get("text_fingerprint") == fingerprint and
                         (old.get("evaluated_on") == china_today().isoformat() or
                          old["status"] in ("parsed", "unchanged", "archived")) and
@@ -105,4 +111,13 @@ class ScheduleDiscovery:
                     # 其余配图不得在同一轮扫描中覆盖它。
                     if record["status"] in ("parsed", "unchanged", "archived"):
                         break
+            await self.prune_images()
             return results
+
+    async def prune_images(self):
+        """收尾清理：判定临时图与过期候选图；失败不影响扫描结果。"""
+        try:
+            return await self.data.prune_schedule_images()
+        except Exception:
+            logger.warning("Unable to prune schedule images")
+            return None

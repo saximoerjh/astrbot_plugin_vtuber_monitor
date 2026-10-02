@@ -119,6 +119,7 @@ class ScheduleWatch:
                 state.update(checked_slot=slot, error="检查或解析失败，保留原周表，下次检查重试")
                 logger.warning("Schedule scan failed uid=%s", uid)
             await self.data.save_schedule_tracking(uid, state)
+            await self.discovery.prune_images()
 
     async def _scan_once(self, uid, state, now, slot):
         today = now.date()
@@ -143,8 +144,11 @@ class ScheduleWatch:
                     # 已采用的周表图仍然存在且没变。
                     unchanged = True
                     continue
-                path = await self.data.save_schedule_image(uid, post.id, url, raw)
+                # 先用临时图判定；只有确实是周表才落成候选原图，
+                # 免得每个不是周表的配图都在 schedule_images/ 留下孤儿文件。
+                path = await self.data.save_classification_image(raw)
                 if await self.discovery.parser.is_schedule_image(path):
+                    path = await self.data.save_schedule_image(uid, post.id, url, raw)
                     chosen = (post, url, path, fingerprint)
                     break
                 await self._remember_skip(uid, post, url, index, raw)

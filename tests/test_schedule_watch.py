@@ -44,7 +44,8 @@ async def setup(tmp_path, *, offset=-1, remember=True, times=TIMES, auto_parse_n
     service = ScheduleService(data)
     discovery = SimpleNamespace(
         data=data, parser=parser, bili=bili, schedules=service, _lock=asyncio.Lock(),
-        is_candidate=lambda item: bool(item.images) and (item.is_pinned or "周表" in item.text))
+        is_candidate=lambda item: bool(item.images) and (item.is_pinned or "周表" in item.text),
+        prune_images=AsyncMock(return_value={"images": 0, "scratch": 0, "freed": 0}))
     watch = ScheduleWatch(discovery, scan_times=times, auto_parse_normal=auto_parse_normal)
     initial = parsed(start)
     await service.store_parsed_schedule(initial)
@@ -156,6 +157,8 @@ async def test_non_schedule_image_is_classified_once(tmp_path):
     await watch.check(1, now=at(day, "12:45"))
     assert d.parser.is_schedule_image.await_count == 1
     assert (await d.data.get_schedule_candidates(1))[0]["status"] == "skipped"
+    # 不是周表的配图不再落成候选原图，只在临时目录里判定。
+    assert list((tmp_path / "schedule_images").glob("*")) == []
     # 下一个时间点：已判定过的图不再下载也不再分类。
     await watch.check(1, now=at(day, "20:45"))
     assert d.parser.is_schedule_image.await_count == 1

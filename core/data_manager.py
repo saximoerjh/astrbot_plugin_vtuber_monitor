@@ -4,15 +4,27 @@ import json
 import hashlib
 import os
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import DynamicPost, FollowLevel, Subscription, VtuberState, utc_now, validate_uid, validate_umo
+from .schedule_models import china_today
 
 # live_sessions.synced 是一个小状态机：待落位、已写入周表，
 # 或因为永远无法确定开播时间而退役。
 LIVE_SESSION_PENDING = 0
 LIVE_SESSION_RECORDED = 1
 LIVE_SESSION_SKIPPED = 2
+
+# 这些状态的候选图是"确实被判为周表"，属于要长期保留的那类。
+KEEP_IMAGE_STATUSES = ("parsed", "unchanged", "archived")
+
+
+def image_suffix(content):
+    """按文件头判断扩展名，避免把 webp 存成 png。"""
+    if content.startswith(b"\x89PNG"):
+        return ".png"
+    return ".webp" if content.startswith(b"RIFF") else ".jpg"
 
 
 class DataManager:
@@ -234,8 +246,7 @@ class DataManager:
     async def save_schedule_image(self, uid, dynamic_id, url, content):
         validate_uid(uid)
         key = hashlib.sha256(f"{uid}:{dynamic_id}:{url}:".encode() + content).hexdigest()
-        suffix = ".png" if content.startswith(b"\x89PNG") else ".webp" if content.startswith(b"RIFF") else ".jpg"
-        path = self.path.parent / "schedule_images" / f"{key}{suffix}"
+        path = self.path.parent / "schedule_images" / f"{key}{image_suffix(content)}"
         def write():
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix(path.suffix + ".tmp")
@@ -243,6 +254,92 @@ class DataManager:
             os.replace(temporary, path)
             return str(path.resolve())
         return await asyncio.to_thread(write)
+
+    async def save_classification_image(self, content):
+        """只给"这张图是不是周表"判定用的临时图。
+
+        判定用的图不是候选原图，不该进 `schedule_images/` 占位置；放进
+        `classify_tmp/`，由 prune_schedule_images 每轮扫描后整目录清掉。
+        """
+        path = self.path.parent / "classify_tmp" / f"{hashlib.sha256(content).hexdigest()}{image_suffix(content)}"
+        def write():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_bytes(content)
+            os.replace(temporary, path)
+            return str(path.resolve())
+        return await asyncio.to_thread(write)
+
+    async def prune_schedule_images(self, *, keep_weeks=4, grace_days=7, today=None):
+        """清掉不会再被用到的候选原图，避免 `schedule_images/` 无限增长。
+
+        保留三类：最近 keep_weeks 周里被判为周表的候选图（parsed/unchanged/archived）、
+        这些周归档周表引用的原图、以及 grace_days 天内新写入的任何候选图。
+        其余（孤儿图、以及过期的不合格候选图）删除，并把候选行里指向已删文件的
+        路径清空，避免留下悬空路径。判定用的临时目录每轮整目录清空。
+        """
+        if keep_weeks < 0 or grace_days < 0:
+            raise ValueError("保留周数与宽限天数不能为负。")
+        images = self.path.parent / "schedule_images"
+        scratch = self.path.parent / "classify_tmp"
+        cutoff = ((today or china_today()) - timedelta(weeks=keep_weeks)).isoformat()
+        deadline = datetime.fromisoformat(utc_now()) - timedelta(days=grace_days)
+
+        def within_grace(value):
+            try:
+                return datetime.fromisoformat(value) >= deadline
+            except (TypeError, ValueError):
+                # 时间戳读不出来时按"还在宽限期"处理：宁可不删。
+                return True
+
+        def prune(db):
+            protected, clearable = set(), []
+            for row in db.execute("SELECT payload FROM weekly_schedule_archive"):
+                payload = json.loads(row["payload"])
+                name = Path(payload.get("local_image_path") or "").name
+                if name and (payload.get("week_start") or "") >= cutoff:
+                    protected.add(name)
+            for row in db.execute("SELECT uid, dynamic_id, image_url, payload FROM schedule_candidates"):
+                payload = json.loads(row["payload"])
+                name = Path(payload.get("local_image_path") or "").name
+                if not name:
+                    continue
+                week = payload.get("week_start") or ""
+                recognized = payload.get("status") in KEEP_IMAGE_STATUSES and (not week or week >= cutoff)
+                if recognized or within_grace(payload.get("checked_at")):
+                    protected.add(name)
+                else:
+                    clearable.append((row["uid"], row["dynamic_id"], row["image_url"], name))
+            freed, removed = 0, set()
+            if images.is_dir():
+                for path in images.iterdir():
+                    if not path.is_file() or path.name in protected:
+                        continue
+                    freed += path.stat().st_size
+                    path.unlink(missing_ok=True)
+                    removed.add(path.name)
+            for uid, dynamic_id, image_url, name in clearable:
+                if name not in removed:
+                    continue
+                row = db.execute("SELECT payload FROM schedule_candidates"
+                                 " WHERE uid=? AND dynamic_id=? AND image_url=?",
+                                 (uid, dynamic_id, image_url)).fetchone()
+                if row is None:
+                    continue
+                payload = json.loads(row["payload"])
+                payload["local_image_path"] = ""
+                db.execute("UPDATE schedule_candidates SET payload=? WHERE uid=? AND dynamic_id=? AND image_url=?",
+                           (json.dumps(payload, ensure_ascii=False), uid, dynamic_id, image_url))
+            scratch_files = 0
+            if scratch.is_dir():
+                for path in scratch.iterdir():
+                    if path.is_file():
+                        freed += path.stat().st_size
+                        path.unlink(missing_ok=True)
+                        scratch_files += 1
+            return {"images": len(removed), "scratch": scratch_files, "freed": freed}
+
+        return await asyncio.to_thread(self._run, prune)
 
     async def save_notice_image(self, uid, dynamic_id, content):
         """通知附带的动态截图；同一张图按内容哈希去重复用。"""

@@ -140,6 +140,28 @@ async def test_discovery_pending_parse_failure_cache_and_retry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_not_schedule_candidate_is_not_downloaded_again(tmp_path):
+    """判定过"不是周表"的配图：原图被清理掉之后也不重新下载、不重新调模型。"""
+    data = DataManager(tmp_path)
+    await data.initialize()
+    client = SimpleNamespace(download_image=AsyncMock(return_value=b"\x89PNGart"))
+    parser = SimpleNamespace(provider_id="vision",
+                             parse=AsyncMock(side_effect=ScheduleParseError("not_schedule")))
+    discovery = ScheduleDiscovery(data, client, parser, ScheduleService(data))
+    post = DynamicPost(1, "100", "周表", 0, ("https://i0.hdslb.com/a.png",), True)
+    assert (await discovery.scan(1, [post]))[0]["status"] == "skipped"
+    assert client.download_image.await_count == 1 and parser.parse.await_count == 1
+    for path in (tmp_path / "schedule_images").glob("*"):
+        path.unlink()                       # 模拟保留策略把这张判定过的原图清掉
+    assert await discovery.scan(1, [post]) == []
+    assert client.download_image.await_count == 1 and parser.parse.await_count == 1
+    # 正文变了就要重新判定，不能一直沿用旧结论。
+    changed = replace(post, text="周表（补充说明）")
+    assert (await discovery.scan(1, [changed]))[0]["status"] == "skipped"
+    assert parser.parse.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_old_pinned_without_model_is_kept_for_later(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()

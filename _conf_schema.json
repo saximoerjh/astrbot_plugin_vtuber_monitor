@@ -293,12 +293,6 @@
     "default": false,
     "invisible": true
   },
-  "_schedule_discovery_merged": {
-    "description": "周表发现开关合并标记",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
   "schedule_keywords": {
     "description": "周表候选关键词；带图片的置顶动态也会作为候选",
     "type": "list",

@@ -86,9 +86,6 @@ def format_diff(changes):
 
 STATUS_LABELS = {"scheduled": "已排期", "postponed": "改期", "cancelled": "取消", "unknown": "待定",
                  "completed": "完成", UNFULFILLED_STATUS: "未兑现"}
-ACTION_LABELS = {"cancel": "取消", "reschedule": "改期", "add": "新增", "title": "改标题", "remove": "删除"}
-
-
 def _brief(plan):
     day = (plan.get("date") or "")[5:]
     return f"{day} {plan.get('start_time') or '待定'} {(plan.get('title') or '').strip()}"

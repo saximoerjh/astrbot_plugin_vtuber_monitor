@@ -32,7 +32,7 @@ class ScheduleImageSelector:
         # 分类用有限尺寸的预览即可，避免下载超大立绘原图。
                             preview = self.bili.preview_image_url(url)
                             raw = await self.bili.download_image(preview)
-                            path = await self.data.save_schedule_image(post.uid, post.id, preview, raw)
+                            path = await self.data.save_classification_image(raw)
                         known = await self.parser.is_schedule_image(path)
                         await self.data.save_image_classification(post.uid, post.id, url, fingerprint, known)
                 except (BiliError, ScheduleParseError, TimeoutError):
