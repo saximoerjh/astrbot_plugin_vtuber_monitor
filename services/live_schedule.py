@@ -12,14 +12,16 @@ from datetime import datetime, timedelta, timezone
 
 from astrbot.api import logger
 
-from ..core.data_manager import (LIVE_SESSION_PENDING, LIVE_SESSION_RECORDED,
-                                 LIVE_SESSION_SKIPPED)
+from ..core.data_manager import (LIVE_SESSION_INVALID, LIVE_SESSION_PENDING,
+                                 LIVE_SESSION_RECORDED, LIVE_SESSION_SKIPPED)
 from ..core.schedule_models import (UNFULFILLED_STATUS, StreamPlan, WeeklySchedule,
                                     is_pending_title, validate_schedule)
 
 CHINA = timezone(timedelta(hours=8))
 MATCH_TOLERANCE = timedelta(hours=1)
 UNFULFILLED_AFTER = timedelta(hours=2)
+# 短于这个时长的开播按无效处理：闪一下的开播不该写进周表、也不该算进统计。
+MIN_LIVE_DURATION = timedelta(minutes=10)
 EXTRA_SOURCE = "live_observation"
 EXTRA_TITLE = "突击直播"
 NO_DELTA = timedelta(0)
@@ -49,17 +51,22 @@ def interval_of(session):
 
 
 class LiveScheduleRecorder:
-    def __init__(self, data, tolerance=MATCH_TOLERANCE, *, unfulfilled_after=UNFULFILLED_AFTER):
+    def __init__(self, data, tolerance=MATCH_TOLERANCE, *, unfulfilled_after=UNFULFILLED_AFTER,
+                 min_live_duration=MIN_LIVE_DURATION):
         self.data = data
         self.tolerance = tolerance
         self.unfulfilled_after = unfulfilled_after
+        if min_live_duration < timedelta(0):
+            raise ValueError("无效直播阈值不能为负。")
+        self.min_live_duration = min_live_duration
         self._lock = asyncio.Lock()
 
     async def sync(self, uid, *, now=None):
         """轮询入口：先退役无法落位的记录，再处理待落位的场次，最后判未兑现。"""
         async with self._lock:
             await self._retire_unknown_starts(uid)
-            for week in await self._pending_weeks(uid):
+            weeks = set(await self._pending_weeks(uid)) | await self._invalidate_short_sessions(uid)
+            for week in sorted(weeks):
                 await self._place_week(uid, week)
             await self.mark_unfulfilled(uid, now)
 
@@ -96,6 +103,26 @@ class LiveScheduleRecorder:
             if not session["start_time"] and session["synced"] == LIVE_SESSION_PENDING:
                 # 接口没有返回开播时间，也没有观测到状态跳变。
                 await self.data.retire_live_session(session["id"])
+
+    def short_session(self, session):
+        """开播时长不足阈值的观测；时长未知（还没下播）时不算。"""
+        if self.min_live_duration <= timedelta(0) or not session["start_time"] or not session["end_time"]:
+            return False
+        try:
+            duration = datetime.fromisoformat(session["end_time"]) - datetime.fromisoformat(session["start_time"])
+        except (TypeError, ValueError):
+            return False
+        return duration < self.min_live_duration
+
+    async def _invalidate_short_sessions(self, uid):
+        """把太短的开播标成无效，返回需要重新落位（好把已挂上的区间摘掉）的周。"""
+        weeks = set()
+        for session in await self.data.live_sessions_for_uid(uid):
+            if session["synced"] == LIVE_SESSION_INVALID or not self.short_session(session):
+                continue
+            await self.data.invalidate_live_session(session["id"])
+            weeks.add(week_of_session(session))
+        return weeks
 
     async def _pending_weeks(self, uid):
         weeks = set()
@@ -300,6 +327,7 @@ class LiveScheduleRecorder:
         sessions = await self._week_sessions(uid, week_start)
         if not sessions:
             return
+        invalid = {session["id"] for session in sessions if self.short_session(session)}
         schedule = await self.data.get_historical_schedule(uid, week_start)
         if schedule is None:
             # 没有本周周表就没有可挂靠的位置，记录保持待落位，
@@ -317,6 +345,9 @@ class LiveScheduleRecorder:
         changed = False
         placement = {}
         for session in sessions:
+            if session["id"] in invalid:
+                # 无效直播不落位；如果之前已经挂上去，下面的 _strip_invalid 会摘掉。
+                continue
             target = placed.get(session["id"])
             if target is None:
                 target = self._nearest(streams, session)
@@ -343,12 +374,36 @@ class LiveScheduleRecorder:
                 plan["revision"] = plan.get("revision", 0) + 1
                 changed = True
             changed |= self._apply(by_id[target], session)
+        changed |= self._strip_invalid(streams, invalid)
         streams = [plan for plan in streams
                    if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")]
         if changed or len(streams) != len(schedule["streams"]):
             if not await self._save(uid, week_start, schedule, streams):
                 return
         await self._finish(sessions, placement, week_start)
+
+    @staticmethod
+    def _strip_invalid(streams, invalid):
+        """把判定为无效的观测从周表里摘掉，并还原被它改过的状态。
+
+        开播时不知道会不会只有一分钟，所以先按正常流程挂上去；等它结束、
+        确认太短之后再撤回，免得周表里留下一条"不足 1 分"的假记录。
+        """
+        if not invalid:
+            return False
+        changed = False
+        for plan in streams:
+            intervals = plan.get("actual_intervals") or ()
+            kept = [item for item in intervals if item["session_id"] not in invalid]
+            if len(kept) == len(intervals):
+                continue
+            plan["actual_intervals"] = kept
+            plan["revision"] = plan.get("revision", 0) + 1
+            if not kept and plan.get("status") == "completed":
+                # 还原成待播；还过没过未兑现判定线由 mark_unfulfilled 正常处理。
+                plan["status"] = "scheduled"
+            changed = True
+        return changed
 
     async def _save(self, uid, week_start, schedule, streams):
         current = await self.data.get_historical_schedule(uid, week_start)

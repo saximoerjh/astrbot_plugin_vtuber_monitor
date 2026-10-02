@@ -35,7 +35,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.35")
+@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.36")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -90,7 +90,8 @@ class MyPlugin(Star):
         self.dispatcher.schedule_enabled = bool(self.config.get("enable_schedule_push", False))
         self.dispatcher.adjustment_enabled = bool(self.config.get("enable_adjustment_push", False))
         self.live_recorder = LiveScheduleRecorder(
-            data, unfulfilled_after=timedelta(hours=float(self.config.get("unfulfilled_after_hours", 2))))
+            data, unfulfilled_after=timedelta(hours=float(self.config.get("unfulfilled_after_hours", 2))),
+            min_live_duration=timedelta(minutes=float(self.config.get("min_live_minutes", 10))))
         await self._repair_legacy_placements(data)
         self.schedules = ScheduleService(data, schedule_push=self.dispatcher.schedule_enabled,
                                         adjustment_push=self.dispatcher.adjustment_enabled,
@@ -507,7 +508,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
-        lines = ["VTuber Monitor 0.7.35"]
+        lines = ["VTuber Monitor 0.7.36"]
         if listener is None:
             lines.append("直播监听：未启用")
         else:
@@ -552,7 +553,8 @@ class MyPlugin(Star):
         lines.append(
             f"实际直播：待落位 {work['live_sessions']['pending']} 场"
             f"；未记录 {work['live_sessions']['skipped']} 场（起点未知）"
-            f"；已记录 {work['live_sessions']['recorded']} 场")
+            f"；已记录 {work['live_sessions']['recorded']} 场"
+            f"；无效 {work['live_sessions']['invalid']} 场（短于 {self.live_recorder.min_live_duration.total_seconds() / 60:g} 分钟）")
         if watch_errors:
             lines.append("周表检查待处理：\n" + "\n".join(watch_errors[:5]))
         yield event.plain_result("\n".join(lines))

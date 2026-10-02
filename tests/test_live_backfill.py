@@ -273,6 +273,62 @@ async def test_old_wrong_mark_is_cleared_when_the_schedule_arrived_later(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_broadcast_shorter_than_the_threshold_is_invalid(tmp_path):
+    """凌晨闪一下的开播（不足阈值）不算直播：不落位、不计统计，只留档。"""
+    data, service, recorder = await boot(tmp_path)
+    day = monday()
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
+    await observe(data, at(day, 20, 30), at(day, 20, 31), title="闪一下")
+    await recorder.sync(1, now=at(day, 20, 40))
+    schedule = await service.get_weekly_schedule(1)
+    stream = planned(schedule)[0]
+    assert stream["actual_intervals"] == [] and stream["status"] == "scheduled"
+    assert extras(schedule) == []
+    session = (await data.live_sessions_for_uid(1))[0]
+    assert session["synced"] == 3                       # LIVE_SESSION_INVALID
+    summary = await recorder.week_summary(1, day.isoformat())
+    assert summary["recorded"] == 0 and summary["extra"] == 0 and summary["pending"] == 0
+    assert (await data.get_work_status())["live_sessions"]["invalid"] == 1
+    # 到了判定线仍然算未兑现：这场排期并没有被那一分钟兑现。
+    assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
+    assert planned(await service.get_weekly_schedule(1))[0]["status"] == "unfulfilled"
+
+
+@pytest.mark.asyncio
+async def test_short_broadcast_already_placed_is_removed_when_it_ends(tmp_path):
+    """开播时不知道会只有一分钟：先正常挂上，结束后确认太短再撤回。"""
+    data, service, recorder = await boot(tmp_path)
+    day = monday()
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
+    await data.save_vtuber_state(VtuberState(1, "主播", 10, True, live_title="闪一下",
+                                             live_started_at=at(day, 20, 30).isoformat()))
+    await recorder.sync(1, now=at(day, 20, 31))
+    assert planned(await service.get_weekly_schedule(1))[0]["actual_intervals"]
+    with patch("astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
+               return_value=at(day, 20, 31).isoformat()):
+        await data.save_vtuber_state(VtuberState(1, "主播", 10, False))
+    await recorder.sync(1, now=at(day, 20, 32))
+    schedule = await service.get_weekly_schedule(1)
+    stream = planned(schedule)[0]
+    assert stream["actual_intervals"] == [] and stream["status"] == "scheduled"
+    assert extras(schedule) == []
+    assert (await data.live_sessions_for_uid(1))[0]["synced"] == 3
+
+
+@pytest.mark.asyncio
+async def test_zero_threshold_disables_the_invalid_filter(tmp_path):
+    data, service, recorder = await boot(tmp_path)
+    recorder.min_live_duration = timedelta(0)
+    day = monday()
+    await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
+    await observe(data, at(day, 20, 30), at(day, 20, 31))
+    await recorder.sync(1, now=at(day, 20, 40))
+    stream = planned(await service.get_weekly_schedule(1))[0]
+    assert len(stream["actual_intervals"]) == 1 and stream["status"] == "completed"
+    assert (await data.live_sessions_for_uid(1))[0]["synced"] == 1
+
+
+@pytest.mark.asyncio
 async def test_scheduled_stream_without_broadcast_is_marked_unfulfilled(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()

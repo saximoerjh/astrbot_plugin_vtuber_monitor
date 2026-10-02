@@ -90,6 +90,12 @@
         "type": "float",
         "default": 60,
         "hint": "默认 60 秒，实际间隔为 120–180 秒；填 0 关闭随机延迟，范围 0–3600。"
+      },
+      "min_live_minutes": {
+        "description": "无效直播阈值（分钟）",
+        "type": "float",
+        "default": 10,
+        "hint": "短于这个时长的开播按无效处理：不写进周表、不计入时长与迟到统计，只在状态里留档。填 0 关闭该过滤。"
       }
     }
   },
@@ -201,6 +207,12 @@
     "description": "直播轮询每轮额外随机等待的最大秒数（0–3600）；默认搭配120秒基础间隔，实际120–180秒",
     "type": "float",
     "default": 60,
+    "invisible": true
+  },
+  "min_live_minutes": {
+    "description": "短于这个分钟数的开播按无效处理，不写进周表、不计入统计；0 关闭",
+    "type": "float",
+    "default": 10,
     "invisible": true
   },
   "schedule_scan_times": {

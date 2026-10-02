@@ -10,11 +10,12 @@ from pathlib import Path
 from .models import DynamicPost, FollowLevel, Subscription, VtuberState, utc_now, validate_uid, validate_umo
 from .schedule_models import china_today
 
-# live_sessions.synced 是一个小状态机：待落位、已写入周表，
-# 或因为永远无法确定开播时间而退役。
+# live_sessions.synced 是一个小状态机：待落位、已写入周表、
+# 因为永远无法确定开播时间而退役，或因为开播太短被判定为无效。
 LIVE_SESSION_PENDING = 0
 LIVE_SESSION_RECORDED = 1
 LIVE_SESSION_SKIPPED = 2
+LIVE_SESSION_INVALID = 3
 
 # 这些状态的候选图是"确实被判为周表"，属于要长期保留的那类。
 KEEP_IMAGE_STATUSES = ("parsed", "unchanged", "archived")
@@ -557,7 +558,8 @@ class DataManager:
                 "SELECT synced, COUNT(*) AS n FROM live_sessions GROUP BY synced")}
             status["live_sessions"] = {"pending": sessions.get(LIVE_SESSION_PENDING, 0),
                                        "recorded": sessions.get(LIVE_SESSION_RECORDED, 0),
-                                       "skipped": sessions.get(LIVE_SESSION_SKIPPED, 0)}
+                                       "skipped": sessions.get(LIVE_SESSION_SKIPPED, 0),
+                                       "invalid": sessions.get(LIVE_SESSION_INVALID, 0)}
             return status
         return await asyncio.to_thread(self._run, read)
 
@@ -707,6 +709,11 @@ class DataManager:
         await asyncio.to_thread(self._run, lambda db: db.execute(
             "UPDATE live_sessions SET synced=? WHERE id=? AND synced=?",
             (LIVE_SESSION_SKIPPED, session_id, LIVE_SESSION_PENDING)))
+
+    async def invalidate_live_session(self, session_id):
+        """把开播太短的观测标成无效：不落位、不计入统计，但留档备查。"""
+        await asyncio.to_thread(self._run, lambda db: db.execute(
+            "UPDATE live_sessions SET synced=? WHERE id=?", (LIVE_SESSION_INVALID, session_id)))
 
     async def live_sessions_for_uid(self, uid):
         return await asyncio.to_thread(self._run, lambda db: [dict(r) for r in db.execute(
