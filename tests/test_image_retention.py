@@ -57,6 +57,22 @@ async def test_prune_keeps_recent_schedules_and_drops_the_rest(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prune_keeps_the_image_a_pending_scan_is_waiting_for(tmp_path):
+    """待确认周次的任务还要用这张图重试，不能被保留策略当垃圾清掉。"""
+    data = DataManager(tmp_path)
+    await data.initialize()
+    pending = await data.save_schedule_image(1, "100", "u9", b"\x89PNGpending")
+    await data.save_schedule_tracking(1, {"week": "2026-09-28",
+                                          "pending": {"path": pending, "fingerprint": "f"}})
+    orphan = tmp_path / "schedule_images" / "orphan.png"
+    orphan.write_bytes(b"orphan")
+    result = await data.prune_schedule_images()
+    remaining = {path.name for path in (tmp_path / "schedule_images").glob("*")}
+    assert remaining == {Path(pending).name}
+    assert result["images"] == 1
+
+
+@pytest.mark.asyncio
 async def test_classification_scratch_is_wiped_by_prune(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()

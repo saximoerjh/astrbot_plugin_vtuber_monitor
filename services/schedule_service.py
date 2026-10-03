@@ -14,6 +14,25 @@ from ..core.schedule_diff import (align_streams, format_adjustment_notice, forma
                                   schedule_diff)
 
 
+def _info_updates(args):
+    """把 update_stream_info 的参数整理成待写入字段：只处理真正给出的部分。"""
+    updates = {}
+    title = args.get("title")
+    if isinstance(title, str) and title.strip():
+        updates["title"] = title.strip()
+    day = args.get("date")
+    if isinstance(day, str) and day.strip():
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day.strip()):
+            raise ValueError("补时间的日期必须是 YYYY-MM-DD。")
+        updates["date"] = day.strip()
+    started = args.get("start_time")
+    if isinstance(started, str) and started.strip():
+        if not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", started.strip()):
+            raise ValueError("补时间必须是 HH:MM。")
+        updates["start_time"] = started.strip()
+    return updates
+
+
 class ScheduleService:
     def __init__(self, data, *, schedule_push=False, adjustment_push=False, reconciler=None,
                  notice_image=None):
@@ -97,11 +116,18 @@ class ScheduleService:
             if not isinstance(operation, dict) or set(operation) != {"name", "arguments"}:
                 raise ValueError("调播操作格式无效。")
             name, args = operation["name"], operation["arguments"]
-            fields = {"reschedule_stream": {"stream_id", "date", "start_time", "reason"},
-                      "cancel_stream": {"stream_id", "reason"},
-                      "add_stream": {"date", "start_time", "title", "reason"},
-                      "update_stream_info": {"stream_id", "title", "reason"}}
-            if not isinstance(name, str) or name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
+            # update_stream_info 的 title/date/start_time 可选：动态只给了时间时，
+            # 就只补时间，不必把没改的字段一起传进来。
+            allowed = {"reschedule_stream": {"stream_id", "date", "start_time", "reason"},
+                       "cancel_stream": {"stream_id", "reason"},
+                       "add_stream": {"date", "start_time", "title", "reason"},
+                       "update_stream_info": {"stream_id", "title", "date", "start_time", "reason"}}
+            required = {"reschedule_stream": allowed["reschedule_stream"],
+                        "cancel_stream": allowed["cancel_stream"],
+                        "add_stream": allowed["add_stream"],
+                        "update_stream_info": {"stream_id", "reason"}}
+            if (not isinstance(name, str) or name not in allowed or not isinstance(args, dict)
+                    or not required[name] <= set(args) <= allowed[name]):
                 raise ValueError("调播工具或参数不在允许范围内。")
             reason = args["reason"]
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
@@ -118,7 +144,18 @@ class ScheduleService:
                 raise ValueError("找不到唯一的目标直播场次。")
             i = matches[0]
             plan = plans[i]
-            updates = {"title": args["title"]} if name == "update_stream_info" else {"status": "cancelled"}
+            updates = {"status": "cancelled"}
+            if name == "update_stream_info":
+                updates = _info_updates(args)
+                if not updates:
+                    raise ValueError("update_stream_info 需要时间或标题，不能只给 stream_id。")
+                if {"date", "start_time"} & set(updates):
+                    if plan.status in ("cancelled", "completed"):
+                        raise ValueError("已取消或已结束的直播不能补时间。")
+                    if plan.start_time and updates.get("start_time", plan.start_time) != plan.start_time:
+                        raise ValueError("已有明确时间的场次请改用 reschedule_stream。")
+                    if "start_time" in updates and plan.status == "unknown":
+                        updates["status"] = "scheduled"
             if name == "reschedule_stream":
                 if plan.status in ("cancelled", "completed"):
                     raise ValueError("已取消或完成的直播不能直接改期。")
@@ -165,9 +202,18 @@ class ScheduleService:
         return await self.apply_operations(uid, [{"name": "add_stream", "arguments": {
             "date": date, "start_time": start_time, "title": title, "reason": reason}}], **options)
 
-    async def update_stream_info(self, uid, stream_id, title, reason, **options):
-        return await self.apply_operations(uid, [{"name": "update_stream_info", "arguments": {
-            "stream_id": stream_id, "title": title, "reason": reason}}], **options)
+    async def update_stream_info(self, uid, stream_id, title="", reason="", *,
+                                 date=None, start_time=None, **options):
+        """改标题，或给"时间待定"的场次补上日期/开始时间（动态只给时间时用）。"""
+        arguments = {"stream_id": stream_id, "reason": reason}
+        if isinstance(title, str) and title.strip():
+            arguments["title"] = title
+        if isinstance(date, str) and date.strip():
+            arguments["date"] = date
+        if isinstance(start_time, str) and start_time.strip():
+            arguments["start_time"] = start_time
+        return await self.apply_operations(
+            uid, [{"name": "update_stream_info", "arguments": arguments}], **options)
 
     async def get_weekly_schedule(self, uid, week_start=""):
         if week_start:

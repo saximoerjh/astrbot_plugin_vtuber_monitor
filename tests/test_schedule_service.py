@@ -25,6 +25,32 @@ async def setup_schedule(tmp_path, **options):
 
 
 @pytest.mark.asyncio
+async def test_update_stream_info_fills_a_pending_slots_time(tmp_path):
+    """动态只给了时间时，用 update_stream_info 给"时间待定"的场次补上，不新增重复场次。"""
+    data = DataManager(tmp_path)
+    await data.initialize()
+    service = ScheduleService(data)
+    monday = (china_today() - timedelta(days=china_today().weekday())).isoformat()
+    schedule = replace(schedule_from_parser(1, {"week_start": monday, "streams": [
+        {"date": monday, "start_time": None, "title": "虚度"}]}), source_dynamic_id="100")
+    await service.store_parsed_schedule(schedule)
+    stream_id = schedule.streams[0].id
+
+    result = await service.update_stream_info(
+        1, stream_id, reason="动态说 17:00 来播", date=monday, start_time="17:00")
+    plan = result["after"]["streams"][0]
+    assert result["success"] and plan["start_time"] == "17:00" and plan["status"] == "scheduled"
+    assert len(result["after"]["streams"]) == 1
+    # 已有明确时间的场次要改时间不能走这条（那是改期，得用 reschedule_stream）。
+    with pytest.raises(ValueError, match="reschedule_stream"):
+        await service.update_stream_info(1, stream_id, reason="改成 18:00", start_time="18:00")
+    # 只给 stream_id 不算一次有效更新。
+    with pytest.raises(ValueError, match="需要时间或标题"):
+        await service.update_stream_info(1, stream_id, reason="什么也没说")
+    assert (await service.get_weekly_schedule(1))["streams"][0]["start_time"] == "17:00"
+
+
+@pytest.mark.asyncio
 async def test_all_operations_audit_restart_and_image_dedup(tmp_path):
     data, service, original = await setup_schedule(tmp_path)
     stream_id = original.streams[0].id

@@ -134,6 +134,32 @@ async def test_second_change_in_the_same_week_uses_update_context(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unconfirmable_image_gives_up_after_a_few_attempts(tmp_path):
+    """一张始终判不出周次的周表图不能把扫描卡死：连续几次失败后跳过并留痕。"""
+    watch, d, start, make = await setup(tmp_path)
+    d.parser.parse.side_effect = ValueError("周次无法确认")
+    await watch.check(1, now=at(start, "12:45"))
+    await watch.check(1, now=at(start, "20:45"))
+    await watch.check(1, now=at(start + timedelta(days=1), "12:45"))
+    state = await d.data.get_schedule_tracking(1)
+    assert state["pending"] is None
+    assert "已跳过" in state["error"]
+    # 这张图被记成"已处理"，不会每个时间点重复下载与分类。
+    rows = await d.data.get_schedule_candidates(1)
+    assert [row["error_code"] for row in rows] == ["needs_date"]
+    assert d.parser.parse.await_count <= 3
+    # 放弃之后换一张新图仍然能被正常识别（同一张被判过的图不会再重复处理）。
+    d.parser.parse.side_effect = None
+    d.parser.parse.return_value = make(start + timedelta(days=7))
+    d.bili.get_latest_dynamics.return_value = [
+        DynamicPost(1, "101", "周表", 2, ("https://i0.hdslb.com/later.png",), False)]
+    d.bili.download_image.return_value = b"\x89PNGlater"
+    await watch.check(1, now=at(start, "12:45"))
+    state = await d.data.get_schedule_tracking(1)
+    assert state["error"] == "" and state["week"] == (start + timedelta(days=7)).isoformat()
+
+
+@pytest.mark.asyncio
 async def test_failed_parse_keeps_baseline_and_retries_next_slot(tmp_path):
     watch, d, start, _ = await setup(tmp_path)
     d.parser.parse.side_effect = ValueError("ambiguous")

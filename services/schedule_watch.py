@@ -12,12 +12,15 @@ from datetime import date, datetime, time, timedelta, timezone
 from astrbot.api import logger
 
 from ..core.schedule_models import StreamPlan, WeeklySchedule, china_today
+from .schedule_parser import ScheduleParseError
 
 CHINA = timezone(timedelta(hours=8))
 
 DEFAULT_SCAN_TIMES = ("00:30", "12:30", "20:30")
 # 每轮最多看几条候选动态（置顶另算）。
 RECENT_POSTS = 5
+# 同一个"待确认周次"的任务连续失败几次就放弃这张图，避免卡住整个扫描。
+PENDING_ATTEMPTS = 3
 _CLOCK = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 
 
@@ -96,6 +99,16 @@ class ScheduleWatch:
             return False
         return record.get("status") in ("parsed", "unchanged", "archived", "skipped")
 
+    @staticmethod
+    def _given_up(state, post, url, fingerprint=None):
+        """确认不了周次、已经放弃过的图不再重复处理；换了图或正文才会重新看。"""
+        for item in state.get("ignored_images") or []:
+            if item.get("dynamic_id") != post.id or item.get("image_url") != url:
+                continue
+            if fingerprint is None or not item.get("fingerprint") or item["fingerprint"] == fingerprint:
+                return True
+        return False
+
     async def check(self, uid, *, now=None, special=False):
         """到点后扫描一次；同一时间点只处理一次。"""
         now = now or datetime.now(CHINA)
@@ -124,11 +137,12 @@ class ScheduleWatch:
     async def _scan_once(self, uid, state, now, slot):
         today = now.date()
         # 先续做上次中断的任务，再比对新的快照。
+        dropped = False
         if state.get("pending"):
             try:
                 await self._complete(uid, state)
-            except Exception:
-                state["error"] = "上次更新尚不能确认周次或解析失败"
+            except (ScheduleParseError, ValueError):
+                dropped = await self._postpone_or_drop(uid, state)
         previous = {(row["dynamic_id"], row["image_url"]): row
                     for row in await self.data.get_schedule_candidates(uid)}
         chosen = None
@@ -138,11 +152,15 @@ class ScheduleWatch:
                 current = url == state.get("image_url")
                 if not current and self._known(previous, post, url):
                     continue
+                if not current and self._given_up(state, post, url):
+                    continue
                 raw = await self.discovery.bili.download_image(url)
                 fingerprint = snapshot(raw, post.text)
                 if fingerprint == state.get("fingerprint"):
                     # 已采用的周表图仍然存在且没变。
                     unchanged = True
+                    continue
+                if self._given_up(state, post, url, fingerprint):
                     continue
                 # 先用临时图判定；只有确实是周表才落成候选原图，
                 # 免得每个不是周表的配图都在 schedule_images/ 留下孤儿文件。
@@ -170,10 +188,13 @@ class ScheduleWatch:
                     "dynamic_id": post.id, "image_url": url, "path": path, "text": post.text,
                 }
                 await self.data.save_schedule_tracking(uid, state)
-                await self._complete(uid, state)
+                try:
+                    await self._complete(uid, state)
+                except (ScheduleParseError, ValueError):
+                    dropped = await self._postpone_or_drop(uid, state)
         elif unchanged:
             state.update(pending=None, error="")
-        else:
+        elif not dropped:
             state["error"] = "置顶与最近动态里没有找到可确认的周表图，请手动检查"
         state["checked_slot"] = slot
 
@@ -186,6 +207,45 @@ class ScheduleWatch:
             "evaluated_on": china_today().isoformat(), "local_image_path": "",
             "status": "skipped", "checked_at": datetime.now(CHINA).isoformat(timespec="seconds"),
         })
+
+    async def _postpone_or_drop(self, uid, state):
+        """待确认周次的任务失败：记次数，连续失败到上限就放弃这张图。
+
+        一张"确实是周表、但模型始终判不出周次"的图（例如主播把本周周表换成另一种
+        排版）原来会让这个任务无限重试：每个时间点都重新下载、重新分类同一张图，
+        却永远确认不了。放弃时把它记成已处理的候选，扫描就能继续往前看。
+
+        Returns:
+            是否已经放弃这张图（True 表示本轮不再重复处理它）。
+        """
+        job = dict(state.get("pending") or {})
+        attempts = int(job.get("attempts", 0)) + 1
+        if attempts < PENDING_ATTEMPTS:
+            job["attempts"] = attempts
+            state["pending"] = job
+            state["error"] = "上次更新尚不能确认周次或解析失败"
+            return False
+        state["pending"] = None
+        state["error"] = "有一张新周表图无法确认周次，已跳过；需要的话用 /vt_parse_schedule 指定周次"
+        logger.warning("Schedule image left unconfirmed uid=%s dynamic=%s", uid, job.get("dynamic_id"))
+        ignored = [item for item in (state.get("ignored_images") or [])
+                   if item.get("image_url") != job.get("image_url")]
+        ignored.append({"dynamic_id": str(job.get("dynamic_id", "")),
+                        "image_url": job.get("image_url", ""),
+                        "fingerprint": job.get("fingerprint", "")})
+        state["ignored_images"] = ignored[-10:]
+        if job.get("dynamic_id") and job.get("image_url"):
+            await self.data.save_schedule_candidate({
+                "uid": uid, "dynamic_id": str(job["dynamic_id"]), "image_url": job["image_url"],
+                "image_index": int(job.get("image_index", 1) or 1),
+                "text_fingerprint": job.get("fingerprint", ""),
+                "evaluated_on": china_today().isoformat(),
+                "local_image_path": job.get("path", ""),
+                "status": "skipped", "error_code": "needs_date",
+                "error_message": "周表图无法确认周次，已跳过",
+                "checked_at": datetime.now(CHINA).isoformat(timespec="seconds"),
+            })
+        return True
 
     async def _complete(self, uid, state):
         job = state["pending"]

@@ -1,25 +1,32 @@
 """只提供结构定义的 FunctionTool；调用经校验后整批提交。"""
 
 TOOL_FIELDS = {
-    "reschedule_stream": ("改期：仅使用明确的日期、时间和已有场次 ID。", ("stream_id", "date", "start_time", "reason")),
-    "cancel_stream": ("取消明确指向的已有直播。", ("stream_id", "reason")),
-    "add_stream": ("新增明确宣布的直播；未知时间用 null。", ("date", "start_time", "title", "reason")),
-    "update_stream_info": ("修改明确指向的已有直播标题。", ("stream_id", "title", "reason")),
+    "reschedule_stream": ("改期：仅使用明确的日期、时间和已有场次 ID。",
+                          ("stream_id", "date", "start_time", "reason"), ()),
+    "cancel_stream": ("取消明确指向的已有直播。", ("stream_id", "reason"), ()),
+    "add_stream": ("新增明确宣布的直播；未知时间用 null。",
+                   ("date", "start_time", "title", "reason"), ()),
+    # date/start_time 可选：动态给了时间就补到"时间待定"的场次上，改标题照旧。
+    "update_stream_info": ("给已有直播补上日期/开始时间，或改标题；不需要改的字段省略。",
+                           ("stream_id", "reason"), ("title", "date", "start_time")),
 }
 
 
 def build_toolset():
     from astrbot.core.agent.tool import FunctionTool, ToolSet
     tools = []
-    for name, (description, fields) in TOOL_FIELDS.items():
-        properties = {field: {"type": "string"} for field in fields}
+    for name, (description, required, optional) in TOOL_FIELDS.items():
+        properties = {field: {"type": "string"} for field in (*required, *optional)}
         if "start_time" in properties:
             properties["start_time"] = {"type": ["string", "null"] if name == "add_stream" else "string",
                                         "description": "北京时间 HH:MM"}
         if "date" in properties:
             properties["date"]["description"] = "明确的 YYYY-MM-DD，本周范围内"
+        if name == "update_stream_info":
+            properties["start_time"]["description"] = "北京时间 HH:MM；不改就省略（不要传 null）"
         tools.append(FunctionTool(name=name, description=description, parameters={
-            "type": "object", "properties": properties, "required": list(fields), "additionalProperties": False}))
+            "type": "object", "properties": properties, "required": list(required),
+            "additionalProperties": False}))
     return ToolSet(tools=tools)
 
 

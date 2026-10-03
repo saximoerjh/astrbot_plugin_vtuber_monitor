@@ -295,6 +295,11 @@ class DataManager:
 
         def prune(db):
             protected, clearable = set(), []
+            for row in db.execute("SELECT payload FROM schedule_tracking"):
+                # 定时扫描的"待确认周次"任务还要用这张图重试解析，不能当垃圾清掉。
+                name = Path(((json.loads(row["payload"]).get("pending") or {}).get("path")) or "").name
+                if name:
+                    protected.add(name)
             for row in db.execute("SELECT payload FROM weekly_schedule_archive"):
                 payload = json.loads(row["payload"])
                 name = Path(payload.get("local_image_path") or "").name
