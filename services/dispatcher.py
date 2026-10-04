@@ -28,7 +28,7 @@ class Dispatcher:
     def __init__(self, context, *, normal_start=True, normal_end=True,
                  special_start=True, special_end=False, send_timeout=15,
                  message_factory=make_message, live_message_factory=make_live_message,
-                 image_message_factory=make_image_message):
+                 image_message_factory=make_image_message, flags_provider=None):
         if not math.isfinite(send_timeout) or send_timeout <= 0:
             raise ValueError("消息发送超时必须是正数。")
         self.context = context
@@ -36,6 +36,8 @@ class Dispatcher:
         self.normal_end = normal_end
         self.special_start = special_start
         self.special_end = special_end
+        # 传入后每次发送都重读一遍开关，改完配置不用重载插件也能立刻生效。
+        self.flags_provider = flags_provider
         self.send_timeout = send_timeout
         self.message_factory = message_factory
         self.live_message_factory = live_message_factory
@@ -45,6 +47,22 @@ class Dispatcher:
         self._schedule_lock = asyncio.Lock()
         self.schedule_enabled = False
         self.adjustment_enabled = False
+
+    async def notification_flags(self):
+        """当前生效的四个通知开关；重读失败就退回启动时的值。"""
+        flags = {"normal_start": self.normal_start, "normal_end": self.normal_end,
+                 "special_start": self.special_start, "special_end": self.special_end}
+        if self.flags_provider is None:
+            return flags
+        try:
+            latest = await self.flags_provider()
+        except Exception:
+            logger.warning("Unable to reload notification switches; using startup values")
+            return flags
+        for name, value in (latest or {}).items():
+            if name in flags:
+                flags[name] = bool(value)
+        return flags
 
     async def push_schedule_updated(self, umo, text):
         return await self._send(umo, text)
@@ -108,11 +126,12 @@ class Dispatcher:
             text += f"\n直播标题：{state.live_title}"
         if state.room_id:
             text += f"\nhttps://live.bilibili.com/{state.room_id}"
+        flags = await self.notification_flags()
         destinations = {
             s.umo for s in subscriptions if s.uid == state.uid and (
-                (self.special_start if started else self.special_end)
+                (flags["special_start"] if started else flags["special_end"])
                 if s.level == FollowLevel.SPECIAL
-                else (self.normal_start if started else self.normal_end))
+                else (flags["normal_start"] if started else flags["normal_end"]))
         }
         for umo in sorted(destinations):
             cover = state.live_cover if started else ""

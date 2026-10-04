@@ -166,6 +166,31 @@ async def test_dispatcher_failures_options_and_special(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_notification_switches_can_come_from_a_live_reload(tmp_path):
+    """发送前重读的开关优先于启动时的值：配置一关立刻不再发，一开立刻就能发。"""
+    data = DataManager(tmp_path)
+    await data.initialize()
+    state = VtuberState(1, "主播", 10, True)
+    await data.add_subscription(state, "a", FollowLevel.SPECIAL)
+    subscriptions = await data.get_subscriptions_by_uid(1)
+    context = AsyncMock()
+    latest = {"special_end": False}
+    dispatcher = Dispatcher(context, message_factory=str, special_end=True,
+                            flags_provider=AsyncMock(side_effect=lambda: dict(latest)))
+    await dispatcher.push_live_ended(state, subscriptions)
+    assert context.send_message.await_count == 0          # 启动时是开的，但配置现在关着
+    latest["special_end"] = True
+    dispatcher.special_end = False
+    await dispatcher.push_live_ended(state, subscriptions)
+    assert context.send_message.await_count == 1          # 配置现在开着 → 立刻发
+    # 重读失败时退回启动时的值，不能因为读配置出错就不发通知。
+    dispatcher.flags_provider = AsyncMock(side_effect=RuntimeError("boom"))
+    dispatcher.special_end = True
+    await dispatcher.push_live_ended(state, subscriptions)
+    assert context.send_message.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_send_timeout_and_cancellation():
     context = AsyncMock()
     async def hang(*args):

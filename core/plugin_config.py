@@ -12,6 +12,13 @@ MIDNIGHT_KEY = "enable_midnight_schedule_check"
 LEGACY_SESSDATA_KEY = "bilibili_sessdata"
 ADJUSTMENT_KEY = "auto_adjustment_with_schedule"
 LEGACY_ADJUSTMENT_KEY = "enable_adjustment_processing"
+# 运行期要实时读取的四个通知开关：配置项名 → Dispatcher 里的字段名。
+NOTIFICATION_KEYS = {
+    "normal_start": "normal_live_start_push",
+    "normal_end": "normal_live_end_push",
+    "special_start": "special_live_start_push",
+    "special_end": "special_live_end_push",
+}
 
 
 def merge_adjustment_switches(config):
@@ -133,3 +140,20 @@ def prepare_config(config):
         for key, field in definition["items"].items():
             flat[key] = copy.deepcopy(values.get(key, field["default"]))
     return flat
+
+
+def read_notification_flags(path):
+    """重读配置文件里的四个通知开关。
+
+    AstrBot 只在插件加载时把配置交给插件，改完开关默认要重载才生效。发送通知前
+    用它重读一遍，就能做到"关了立刻不再发"。读不到或解析失败时返回 None，由调用方
+    用启动时的值兜底；这里只读不写，不会改动配置文件。
+    """
+    try:
+        flat = prepare_config(json.loads(Path(path).read_text(encoding="utf-8-sig")))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    try:
+        return {name: bool(flat[key]) for name, key in NOTIFICATION_KEYS.items()}
+    except KeyError:
+        return None

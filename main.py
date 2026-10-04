@@ -2,6 +2,7 @@
 import asyncio
 import time
 from datetime import timedelta
+from pathlib import Path
 
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
@@ -9,7 +10,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 from .bili_client import BiliClient, BiliError
 from .core.data_manager import DataManager
-from .core.plugin_config import prepare_config
+from .core.plugin_config import prepare_config, read_notification_flags
 from .core.models import DynamicPost
 from .core.schedule_models import china_today, parse_week_override
 from .core.schedule_diff import schedule_diff, format_diff
@@ -34,8 +35,10 @@ from .services.schedule_report import format_schedule_report
 from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
+PLUGIN_NAME = "astrbot_plugin_vtuber_monitor"
 
-@register("astrbot_plugin_vtuber_monitor", "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.37")
+
+@register(PLUGIN_NAME, "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.38")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -63,7 +66,7 @@ class MyPlugin(Star):
     async def initialize(self):
         if self.live_listener is not None:
             return
-        data_dir = StarTools.get_data_dir("astrbot_plugin_vtuber_monitor")
+        data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         data = DataManager(data_dir)
         await data.initialize()
         self.targets = TargetService(data)
@@ -74,12 +77,14 @@ class MyPlugin(Star):
         self.screenshot = screenshot
         self.schedule_renderer = ScheduleRenderer(
             data_dir, channel=self.config.get("screenshot_browser_channel", "auto"))
+        self.config_path = Path(data_dir).parents[1] / "config" / f"{PLUGIN_NAME}_config.json"
         self.dispatcher = Dispatcher(
             self.context,
             normal_start=self.config.get("normal_live_start_push", True),
             normal_end=self.config.get("normal_live_end_push", True),
             special_start=self.config.get("special_live_start_push", True),
             special_end=self.config.get("special_live_end_push", False),
+            flags_provider=self._notification_flags,
         )
         listener = LiveListener(data, None, self.dispatcher,
                                 float(self.config.get("live_poll_interval", 120)),
@@ -136,6 +141,20 @@ class MyPlugin(Star):
         dynamic_listener.bili = self.bili
         self.dynamic_listener = dynamic_listener
         self._start_tasks()
+
+    async def _notification_flags(self):
+        """给 Dispatcher 用：每次发送前重读配置文件，改完开关立刻生效。"""
+        return await asyncio.to_thread(read_notification_flags, self.config_path)
+
+    async def _notification_line(self):
+        """状态里那一行：当前实际生效的通知开关，以及它是从哪来的。"""
+        flags = await self.dispatcher.notification_flags()
+        source = "配置实时读取" if await self._notification_flags() else "启动时的配置"
+        def word(value):
+            return "开" if value else "关"
+        return (f"通知开关（{source}）：特别关注 上播{word(flags['special_start'])}"
+                f"／下播{word(flags['special_end'])}；普通关注 上播{word(flags['normal_start'])}"
+                f"／下播{word(flags['normal_end'])}")
 
     async def _repair_legacy_placements(self, data):
         """启动兜底：旧版本把同一场直播挂到多条周表条目上，这里收敛回一条。"""
@@ -508,7 +527,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
-        lines = ["VTuber Monitor 0.7.37"]
+        lines = ["VTuber Monitor 0.7.38"]
         if listener is None:
             lines.append("直播监听：未启用")
         else:
@@ -524,6 +543,8 @@ class MyPlugin(Star):
         if self.dispatcher is not None:
             counts.append(f"发送成功：{self.dispatcher.sent}；发送失败：{self.dispatcher.failed}")
         lines.append("；".join(counts) if counts else "发送计数：未初始化")
+        if self.dispatcher is not None:
+            lines.append(await self._notification_line())
         if self.bili is not None:
             lines.append(f"登录凭据：{'已保存扫码凭据' if self.bili.has_credentials else '未登录（管理员私聊执行 /bili_login 扫码）'}")
         if self.dynamic_listener is None:
@@ -560,24 +581,37 @@ class MyPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     async def terminate(self):
-        try:
-            if self.pinned is not None:
-                await self.pinned.close()
-            if self.login is not None:
-                await self.login.close()
-            tasks = [task for task in (self.live_listener_task, self.dynamic_listener_task,
-                                       self.schedule_watch_task, self.profile_task)
-                     if task is not None]
-            for task in tasks:
-                task.cancel()
-            if tasks:
+        """先停后台任务、再关服务。
+
+        顺序很重要：以前是先关服务再取消任务，中间任何一步抛错都会让监听任务活下来，
+        继续用旧配置发通知（重载后"旧实例还在发下播"就是这么来的）。现在每一步都
+        各自兜住异常，保证任务一定被取消。
+        """
+        tasks = [task for task in (self.live_listener_task, self.dynamic_listener_task,
+                                   self.schedule_watch_task, self.profile_task)
+                 if task is not None]
+        for task in tasks:
+            task.cancel()
+        self.live_listener_task = None
+        self.dynamic_listener_task = None
+        self.schedule_watch_task = None
+        self.profile_task = None
+        if tasks:
+            try:
                 await asyncio.gather(*tasks, return_exceptions=True)
-        finally:
-            self.live_listener_task = None
-            self.dynamic_listener_task = None
-            self.schedule_watch_task = None
-            self.profile_task = None
-            if self.bili is not None:
+            except Exception:
+                logger.warning("VTuber monitor background tasks did not stop cleanly")
+        for label, service in (("pinned", self.pinned), ("login", self.login)):
+            if service is None:
+                continue
+            try:
+                await service.close()
+            except Exception:
+                logger.warning("VTuber %s service did not close cleanly", label)
+        if self.bili is not None:
+            try:
                 await self.bili.close()
-            self.live_listener = None
-            self.dynamic_listener = None
+            except Exception:
+                logger.warning("Unable to close Bilibili client cleanly")
+        self.live_listener = None
+        self.dynamic_listener = None

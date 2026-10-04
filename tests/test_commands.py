@@ -46,6 +46,8 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         await plugin.initialize()
         assert plugin.live_listener_task is None
         assert "未启用" in ([x async for x in plugin.vt_status(event)])[0]
+        # 状态里要能看到当前实际生效的通知开关。
+        assert "通知开关" in ([x async for x in plugin.vt_status(event)])[0]
         # 直播监听缺失时不能提前结束，其余子系统必须照常汇报。
         saved_listener = plugin.live_listener
         plugin.live_listener = None
@@ -202,6 +204,8 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         assert plugin.schedule_watch_task is watch_task
         await asyncio.wait_for(entered.wait(), 1)
         await asyncio.wait_for(dynamic_entered.wait(), 1)
+        # 关闭服务出错也不能留下后台任务：先取消任务、再关服务。
+        plugin.pinned.close = AsyncMock(side_effect=RuntimeError("close failed"))
         await plugin.terminate()
         assert task.cancelled()
         assert dynamic_task.cancelled()

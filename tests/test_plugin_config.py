@@ -1,7 +1,23 @@
 import json
 from pathlib import Path
 
-from astrbot_plugin_vtuber_monitor.core.plugin_config import prepare_config
+from astrbot_plugin_vtuber_monitor.core.plugin_config import prepare_config, read_notification_flags
+
+
+def test_notification_flags_are_read_live_without_touching_the_file(tmp_path):
+    """发送通知前重读开关：只读不写，读不到就返回 None 由调用方兜底。"""
+    path = tmp_path / "plugin_config.json"
+    path.write_text(json.dumps({"notifications": {
+        "normal_live_start_push": True, "normal_live_end_push": False,
+        "special_live_start_push": True, "special_live_end_push": True}}), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    assert read_notification_flags(path) == {
+        "normal_start": True, "normal_end": False, "special_start": True, "special_end": True}
+    assert path.read_text(encoding="utf-8") == before       # 读取不能改写配置文件
+    # 文件不存在或内容坏了：返回 None，让调用方用启动时的值。
+    assert read_notification_flags(tmp_path / "missing.json") is None
+    path.write_text("{ not json", encoding="utf-8")
+    assert read_notification_flags(path) is None
 
 
 def test_legacy_config_migrates_once_without_resetting_values():
