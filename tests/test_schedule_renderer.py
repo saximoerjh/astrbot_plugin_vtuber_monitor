@@ -155,34 +155,30 @@ def test_stats_sum_durations_and_average_across_recorded_streams():
                  interval("2026-09-22T23:30:00+08:00", "2026-09-23T00:00:00+08:00", session="b2")]),
     ])
     # 第一场 2 小时；第二场中途重开，两段相加 2 小时 30 分。合计 4 小时 30 分，
-    # 本周已过 3 天（周一~周三，today=09-23）→ 日均 1 小时 30 分。
+    # 开播的是周一、周二两天 → 日均 2 小时 15 分。
     assert built["直播总时长"] == "4小时30分"
-    assert built["日均直播时长"] == "1小时30分"
+    assert built["日均直播时长"] == "2小时15分"
     assert built["迟到次数"] == "0 次" and built["平均迟到"] == "—"
 
 
-def test_daily_average_spreads_the_total_over_elapsed_days():
-    """日均 = 总时长 ÷ 本周已过天数：同一天播两场不会把日均算小。"""
+def test_daily_average_spreads_the_total_over_days_with_streams():
+    """日均 = 总时长 ÷ 开播过的天数：同一天播两场只算一天，休息日不参与。"""
     same_day = stats_of([
         plan(actual_intervals=[interval("2026-09-21T10:00:00+08:00", "2026-09-21T12:00:00+08:00")]),
         plan(id="b", actual_intervals=[
             interval("2026-09-21T20:00:00+08:00", "2026-09-21T22:00:00+08:00", session="b1")]),
     ])
-    # today=09-23 时已过 3 天：4 小时 ÷ 3 = 1 小时 20 分（按场次平均会是 2 小时）。
+    # 两场都在周一：算一天 → 日均 4 小时（按场次平均只有 2 小时）。
     assert same_day["直播总时长"] == "4小时"
-    assert same_day["日均直播时长"] == "1小时20分"
-    # 周一只过去 1 天时，同样两场就是 4 小时。
-    monday_only = {item["label"]: item["value"] for item in build_schedule_view(
-        schedule([plan(actual_intervals=[
-            interval("2026-09-21T10:00:00+08:00", "2026-09-21T12:00:00+08:00")])]),
-        uid=1, today=date(2026, 9, 21))["stats"]}
-    assert monday_only["日均直播时长"] == "2小时"
-    # 整周结束后按 7 天摊。
-    finished = {item["label"]: item["value"] for item in build_schedule_view(
-        schedule([plan(actual_intervals=[
-            interval("2026-09-21T10:00:00+08:00", "2026-09-21T17:00:00+08:00")])]),
-        uid=1, today=date(2026, 9, 30))["stats"]}
-    assert finished["直播总时长"] == "7小时" and finished["日均直播时长"] == "1小时"
+    assert same_day["日均直播时长"] == "4小时"
+    # 两天各一场 → 按两天平均，没播的日子不拉低数字。
+    two_days = stats_of([
+        plan(actual_intervals=[interval("2026-09-21T20:00:00+08:00", "2026-09-21T22:00:00+08:00")]),
+        plan(id="b", date="2026-09-25", start_time="20:00", original_date="2026-09-25",
+             original_start_time="20:00", actual_intervals=[
+                 interval("2026-09-25T20:00:00+08:00", "2026-09-25T23:00:00+08:00")]),
+    ])
+    assert two_days["直播总时长"] == "5小时" and two_days["日均直播时长"] == "2小时30分"
 
 
 def test_stats_require_more_than_five_minutes_to_count_as_late():
@@ -227,7 +223,7 @@ def test_stats_compare_against_the_rescheduled_time_and_skip_unpromised_streams(
     ])
     assert built["迟到次数"] == "0 次"
     assert built["平均迟到"] == "—"
-    # 1 小时 58 分 + 2 小时 + 1 小时 = 4 小时 58 分，已过 3 天 → 日均 1 小时 39 分。
+    # 1 小时 58 分 + 2 小时 + 1 小时 = 4 小时 58 分，分布在三天 → 日均 1 小时 39 分。
     assert built["直播总时长"] == "4小时58分"
     assert built["日均直播时长"] == "1小时39分"
 
