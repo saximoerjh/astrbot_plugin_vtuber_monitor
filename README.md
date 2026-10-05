@@ -91,7 +91,7 @@ python -m playwright install chromium
 | **vt_latest** | `<UID或别名>` | 发两条：最新动态截图 + 动态链接，不修改检查点 | 所有人 |
 | **vt_pinned** | `<UID或别名>` | 合并转发置顶动态截图与周表图 | 所有人 |
 | **vt_4016** | (无) | 看看现在哪个国家是凌晨四点 | 所有人 |
-| **vt_status** | (无) | 查看监听状态与计数 | 所有人 |
+| **vt_status** | (无) | 查看监听状态与计数（markdown，QQ 官方机器人会渲染成卡片） | 所有人 |
 | **vt_ping** | (无) | 检查插件是否已加载 | 所有人 |
 | **bili_login** | (无) | 私聊扫码登录 Bilibili | 管理员 |
 | **vt_parse_schedule** | `<UID或别名> [本周\|上周\|下周\|YYYY-MM-DD]` | 手动解析周表，并建立定时检查基准 | 管理员 |
