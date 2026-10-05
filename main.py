@@ -38,7 +38,7 @@ from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 PLUGIN_NAME = "astrbot_plugin_vtuber_monitor"
 
 
-@register(PLUGIN_NAME, "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.38")
+@register(PLUGIN_NAME, "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.39")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -102,6 +102,8 @@ class MyPlugin(Star):
                                         adjustment_push=self.dispatcher.adjustment_enabled,
                                         reconciler=self.live_recorder,
                                         notice_image=self._adjustment_notice_image)
+        # 本周还没有周表时，直播轮询会先建一张空白周表当容器（见 LiveScheduleRecorder）。
+        self.live_recorder.placeholder = self.schedules.ensure_placeholder
         self.adjustment = AdjustmentAgent(
             self.context, self.schedules,
             self.config.get("multimodal_provider_id", ""),
@@ -527,7 +529,7 @@ class MyPlugin(Star):
             if tracked and tracked.get("error"):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
-        lines = ["VTuber Monitor 0.7.38"]
+        lines = ["VTuber Monitor 0.7.39"]
         if listener is None:
             lines.append("直播监听：未启用")
         else:

@@ -238,6 +238,15 @@ def test_unfulfilled_card_uses_the_red_style():
 
 
 def test_footer_counts_unfulfilled_from_the_rendered_schedule():
+    """新周周表还没出来时的空白容器也要能出图：7 天空板 + 页脚统计。"""
+    empty = build_schedule_view({"uid": 1, "week_start": "2026-10-05", "streams": []}, uid=1,
+                                display_name="主播", summary={"recorded": 0, "extra": 0,
+                                                              "pending": 0, "unknown": 0,
+                                                              "unfulfilled": 0})
+    assert len(empty["days"]) == 7 and all(day["streams"] == [] for day in empty["days"])
+    assert "周表未发布" in empty["summary_text"]      # 空板要有提示，免得以为坏了
+    page = build_schedule_html(empty)
+    assert isinstance(page, str) and "主播" in page
     summary = {"recorded": 0, "extra": 0, "pending": 0, "unknown": 0}
     built = view([plan(status="unfulfilled"), plan(id="b", status="unfulfilled")], summary=summary)
     assert "未兑现 2 场" in built["summary_text"]

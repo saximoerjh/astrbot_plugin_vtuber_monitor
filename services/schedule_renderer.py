@@ -210,7 +210,9 @@ def build_schedule_view(schedule, *, uid, display_name="", summary=None, today=N
         "revision": schedule.get("revision", 0),
         "days": days,
         "total": sum(day["count"] for day in days),
-        "summary_text": format_live_summary(counts),
+        "summary_text": (("本周还没有排期（周表未发布），下面是直播记录。"
+                          if not any(plan.get("source") != EXTRA_SOURCE for plan in streams) else "")
+                         + format_live_summary(counts)),
         "summary_ok": summary is not None,
         "stats": _stats_cells(_timing_stats(streams)),
         "banner": {"header": (banner or {}).get("header", ""),

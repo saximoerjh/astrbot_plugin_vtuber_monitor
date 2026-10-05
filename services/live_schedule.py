@@ -52,13 +52,15 @@ def interval_of(session):
 
 class LiveScheduleRecorder:
     def __init__(self, data, tolerance=MATCH_TOLERANCE, *, unfulfilled_after=UNFULFILLED_AFTER,
-                 min_live_duration=MIN_LIVE_DURATION):
+                 min_live_duration=MIN_LIVE_DURATION, placeholder=None):
         self.data = data
         self.tolerance = tolerance
         self.unfulfilled_after = unfulfilled_after
         if min_live_duration < timedelta(0):
             raise ValueError("无效直播阈值不能为负。")
         self.min_live_duration = min_live_duration
+        # 可选：本周还没有周表时建一张空白容器的回调（由 ScheduleService 提供）。
+        self.placeholder = placeholder
         self._lock = asyncio.Lock()
 
     async def sync(self, uid, *, now=None):
@@ -330,9 +332,16 @@ class LiveScheduleRecorder:
         invalid = {session["id"] for session in sessions if self.short_session(session)}
         schedule = await self.data.get_historical_schedule(uid, week_start)
         if schedule is None:
-            # 没有本周周表就没有可挂靠的位置，记录保持待落位，
-            # 并在 /vt_status 与 /vt_schedule 中保持可见。
-            return
+            # 新的一周周表还没出来：先建一张空白周表当容器，直播才有地方落位。
+            # 真正的周表到了以后会重新匹配（见下面的 rematch）。
+            if self.placeholder is None:
+                # 没有可挂靠的位置，记录保持待落位，并在 /vt_status 与 /vt_schedule 中可见。
+                return
+            if not await self.placeholder(uid, week_start):
+                return
+            schedule = await self.data.get_historical_schedule(uid, week_start)
+            if schedule is None:
+                return
         streams = [dict(plan) for plan in schedule["streams"]]
         by_id = {plan["id"]: plan for plan in streams}
         placed = {}
@@ -341,6 +350,7 @@ class LiveScheduleRecorder:
                 continue
             for item in plan.get("actual_intervals") or ():
                 # 粘滞：真实场次保留它已经记下的落位。
+                # 突击条目不粘滞：新周表到了以后要重新匹配，可能正好对上某一场。
                 placed.setdefault(item["session_id"], plan["id"])
         changed = False
         placement = {}

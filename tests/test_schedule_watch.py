@@ -45,6 +45,7 @@ async def setup(tmp_path, *, offset=-1, remember=True, times=TIMES, auto_parse_n
     discovery = SimpleNamespace(
         data=data, parser=parser, bili=bili, schedules=service, _lock=asyncio.Lock(),
         is_candidate=lambda item: bool(item.images) and (item.is_pinned or "周表" in item.text),
+        scan=AsyncMock(),
         prune_images=AsyncMock(return_value={"images": 0, "scratch": 0, "freed": 0}))
     watch = ScheduleWatch(discovery, scan_times=times, auto_parse_normal=auto_parse_normal)
     initial = parsed(start)
@@ -131,6 +132,22 @@ async def test_second_change_in_the_same_week_uses_update_context(tmp_path):
     assert options["update_context"]["updates_this_week"] == 2
     stored = await d.data.get_historical_schedule(1, current.isoformat())
     assert stored["streams"][0]["title"] == "修订"
+
+
+@pytest.mark.asyncio
+async def test_watch_creates_a_blank_week_container_for_special_follows(tmp_path):
+    """新的一周周表还没出来时，定时扫描先放一张空白容器，直播才有地方落位。"""
+    watch, d, start, _ = await setup(tmp_path)
+    await d.data.add_subscription(VtuberState(1, "主播", 10, False), "umo", FollowLevel.SPECIAL, [])
+    current = monday(china_today())
+    assert await d.data.get_historical_schedule(1, current.isoformat()) is None
+    d.parser.is_schedule_image.return_value = False      # 这一轮没找到真周表
+    await watch.run_once(now=at(current, "12:45"))
+    schedule = await d.data.get_historical_schedule(1, current.isoformat())
+    assert schedule is not None and schedule["streams"] == []
+    # 已经有容器（或真周表）时不再重复创建。
+    await watch.run_once(now=at(current, "20:45"))
+    assert (await d.data.get_historical_schedule(1, current.isoformat())) == schedule
 
 
 @pytest.mark.asyncio

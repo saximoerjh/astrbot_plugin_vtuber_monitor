@@ -272,7 +272,8 @@ class ScheduleWatch:
         job["parsed"] = schedule.to_dict()
         await self.data.save_schedule_tracking(uid, state)
         stored = await self.data.get_historical_schedule(uid, schedule.week_start)
-        if stored and int(stored["source_dynamic_id"]) > int(job["dynamic_id"]):
+        stored_source = str(stored.get("source_dynamic_id") or "") if stored else ""
+        if stored_source.isdigit() and int(stored_source) > int(job["dynamic_id"]):
             raise ValueError("已有更新来源的周表，需要手动确认基准")
         # 可恢复的任务在导入前就固定了目标周；导入后崩溃只会重试
         # 这次幂等导入，而不会把锚点再往后推一周。
@@ -290,9 +291,20 @@ class ScheduleWatch:
         specials = set(await self.data.get_special_vtubers())
         for uid in await self.data.get_subscribed_uids():
             try:
+                # 新的一周周表还没出来时，先放一张空白周表：直播才有地方落位，
+                # /vt_schedule 也能立刻看到这一周。
+                if uid in specials:
+                    await self.ensure_placeholder(uid)
                 await self.check(uid, now=now, special=uid in specials)
             except Exception:
                 logger.warning("Unable to scan schedule uid=%s", uid)
+
+    async def ensure_placeholder(self, uid):
+        """确保本周有周表容器；没有周表服务时静默跳过。"""
+        service = getattr(self.discovery, "schedules", None)
+        if service is None or not hasattr(service, "ensure_placeholder"):
+            return False
+        return await service.ensure_placeholder(uid)
 
     async def run(self):
         while True:

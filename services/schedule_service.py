@@ -56,7 +56,10 @@ class ScheduleService:
         if old is None:
             current = await self.data.get_weekly_schedule(schedule.uid)
             old = current if current and current["week_start"] == schedule.week_start else None
-        if old and int(old["source_dynamic_id"]) > int(schedule.source_dynamic_id):
+        # 空白容器没有来源动态（空字符串），不能用序号比较，也不能被它挡住导入。
+        old_source = str(old.get("source_dynamic_id") or "") if old else ""
+        if old_source.isdigit() and str(schedule.source_dynamic_id).isdigit() \
+                and int(old_source) > int(schedule.source_dynamic_id):
             return False
         stable = {"week_start": schedule.week_start, "source_dynamic_id": schedule.source_dynamic_id,
                   "source_image_url": schedule.source_image_url,
@@ -94,6 +97,27 @@ class ScheduleService:
             await self._import(schedule, import_key=import_key)
             return "archived"
         return "parsed" if await self.replace_weekly_schedule(schedule, import_key=import_key) else "unchanged"
+
+    async def ensure_placeholder(self, uid, week_start=""):
+        """本周还没有周表时，先放一张空白周表，让直播有地方落位。
+
+        这里故意绕过 `validate_schedule` 的"周表不能为空"：那条规则是为了防止模型
+        解析失败后把已有周表清空，而这里创建的是一张本来就不存在任何排期的容器。
+        真正的周表到了以后会照常导入，并把之前落在这里的直播按新周表重新匹配。
+        """
+        uid = validate_uid(uid)
+        if week_start:
+            week = date.fromisoformat(week_start).isoformat()
+        else:
+            today = china_today()
+            week = (today - timedelta(days=today.weekday())).isoformat()
+        if await self.data.get_historical_schedule(uid, week) is not None:
+            return False
+        return await self.data.save_weekly_schedule(
+            {"uid": uid, "week_start": week, "streams": [], "source_dynamic_id": "",
+             "source_image_url": "", "local_image_path": "", "parsed_at": "",
+             "updated_at": utc_now(), "revision": 0},
+            expected=None, source_id="", reason="placeholder")
 
     async def apply_operations(self, uid, operations, *, source_dynamic_id="", operation_id="",
                                expected=None, dry_run=False):

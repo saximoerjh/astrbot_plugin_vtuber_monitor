@@ -26,8 +26,8 @@ def at(day, hour, minute=0):
     return datetime.fromisoformat(f"{day.isoformat()}T{hour:02d}:{minute:02d}:00").replace(tzinfo=CHINA)
 
 
-def poster(day, slots, dynamic_id="900"):
-    payload = {"week_start": monday().isoformat(),
+def poster(day, slots, dynamic_id="900", week=None):
+    payload = {"week_start": (week or monday()).isoformat(),
                "streams": [{"date": day.isoformat(), "start_time": start, "end_time": end, "title": title}
                            for start, end, title in slots]}
     return replace(schedule_from_parser(1, payload), source_dynamic_id=dynamic_id,
@@ -71,6 +71,40 @@ def planned(schedule):
 
 def extras(schedule):
     return [stream for stream in schedule["streams"] if stream["source"] == "live_observation"]
+
+
+@pytest.mark.asyncio
+async def test_blank_week_container_takes_streams_then_rematches(tmp_path):
+    """新的一周周表还没出来时先放一张空白容器，直播有地方落位；真周表到了再重新匹配。"""
+    data, service, recorder = await boot(tmp_path)
+    recorder.placeholder = service.ensure_placeholder
+    day = monday() + timedelta(days=7)
+    week = day.isoformat()
+    await observe(data, at(day, 20, 5), at(day, 22), title="歌回")
+    await recorder.sync(1, now=at(day, 22, 10))
+    schedule = await service.get_weekly_schedule(1, week)
+    assert schedule is not None
+    assert [plan["source"] for plan in schedule["streams"]] == ["live_observation"]
+    assert schedule["streams"][0]["actual_intervals"][0]["session_id"] == 1
+    # 真周表来了：这场正好是 20:00 那条 → 重新匹配，突击条目被吸收。
+    await store(data, service, poster(day, [("20:00", "22:00", "歌回")], week=day), at(day, 12))
+    schedule = await service.get_weekly_schedule(1, week)
+    assert len(schedule["streams"]) == 1
+    plan = schedule["streams"][0]
+    assert plan["source"] == "weekly_image" and plan["start_time"] == "20:00"
+    assert [item["session_id"] for item in plan["actual_intervals"]] == [1]
+    assert all(plan["source"] != "live_observation" for plan in schedule["streams"])
+
+
+@pytest.mark.asyncio
+async def test_placeholder_is_created_once_and_never_overwrites(tmp_path):
+    data, service, _ = await boot(tmp_path)
+    assert await service.ensure_placeholder(1) is True
+    assert (await service.get_weekly_schedule(1))["streams"] == []
+    assert await service.ensure_placeholder(1) is False          # 已有容器不再重复建
+    await store(data, service, poster(monday(), [("20:00", "22:00", "晚播")]), at(monday(), 12))
+    assert await service.ensure_placeholder(1) is False          # 真周表不能被空白容器覆盖
+    assert len((await service.get_weekly_schedule(1))["streams"]) == 1
 
 
 @pytest.mark.asyncio
