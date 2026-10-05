@@ -63,11 +63,13 @@ def _planned_start(plan):
         return None
 
 
-def _timing_stats(streams):
-    """本周时长与准时性：总时长／平均时长／迟到次数／平均迟到。
+def _timing_stats(streams, *, days_elapsed=7):
+    """本周时长与准时性：总时长／日均时长／迟到次数／平均迟到。
 
     时长按场次累计（中途重开的两段相加），仍在直播的场次算不出时长，只参与准时性；
     迟到以「排期开始时间」为基准，没有排期或没有实际开播的场次不参与统计。
+    日均时长按「本周已经过去的天数」摊（当天算一天，最少 1 天、最多 7 天），
+    这样周中看到的是"到目前为止平均每天播多久"，而不是被没播的日子稀释。
     """
     durations, delays, comparable = [], [], 0
     for plan in streams or ():
@@ -88,9 +90,10 @@ def _timing_stats(streams):
         if delay > LATE_THRESHOLD:
             delays.append(delay)
     total = sum(durations, timedelta())
+    days = min(max(int(days_elapsed), 1), 7)
     return {
         "total": total if durations else None,
-        "average": (total / len(durations)) if durations else None,
+        "daily_average": (total / days) if durations else None,
         "late_count": len(delays) if comparable else None,
         "late_average": (sum(delays, timedelta()) / len(delays)) if delays else None,
     }
@@ -100,8 +103,8 @@ def _stats_cells(stats):
     return [
         {"label": "直播总时长",
          "value": _duration_text(stats["total"]) if stats["total"] is not None else "—"},
-        {"label": "平均直播时长",
-         "value": _duration_text(stats["average"]) if stats["average"] is not None else "—"},
+        {"label": "日均直播时长",
+         "value": _duration_text(stats["daily_average"]) if stats["daily_average"] is not None else "—"},
         {"label": "迟到次数",
          "value": f"{stats['late_count']} 次" if stats["late_count"] is not None else "—"},
         {"label": "平均迟到",
@@ -214,7 +217,7 @@ def build_schedule_view(schedule, *, uid, display_name="", summary=None, today=N
                           if not any(plan.get("source") != EXTRA_SOURCE for plan in streams) else "")
                          + format_live_summary(counts)),
         "summary_ok": summary is not None,
-        "stats": _stats_cells(_timing_stats(streams)),
+        "stats": _stats_cells(_timing_stats(streams, days_elapsed=(today - start).days + 1)),
         "banner": {"header": (banner or {}).get("header", ""),
                    "avatar": (banner or {}).get("avatar", "")},
     }
