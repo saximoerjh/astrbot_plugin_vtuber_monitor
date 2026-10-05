@@ -1,5 +1,6 @@
 """与平台无关的主动通知，按目标会话相互隔离。"""
 import asyncio
+import json
 import math
 
 from astrbot.api import logger
@@ -22,6 +23,20 @@ def make_image_message(path):
     from astrbot.api.event import MessageChain
 
     return MessageChain().file_image(path)
+
+
+def notice_paths(value):
+    """调播通知附带的图片：一张是裸路径，多张是 JSON 数组（旧数据仍是裸路径）。"""
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(path) for path in value if path]
+    if str(value).startswith("["):
+        try:
+            return [str(path) for path in json.loads(value) if path]
+        except (TypeError, ValueError):
+            return []
+    return [str(value)]
 
 
 class Dispatcher:
@@ -68,9 +83,9 @@ class Dispatcher:
         return await self._send(umo, text)
 
     async def push_schedule_adjusted(self, umo, text, image_path=""):
-        """调播通知分两条发送：先动态截图，再文字结果。"""
-        if image_path:
-            await self._send_local_image(umo, image_path)
+        """调播通知分两条发送：先动态原图（可能多张），再文字结果。"""
+        for path in notice_paths(image_path):
+            await self._send_local_image(umo, path)
         return await self._send(umo, text)
 
     async def flush_schedule_notifications(self, data):

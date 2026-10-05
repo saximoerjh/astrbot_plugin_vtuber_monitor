@@ -69,4 +69,5 @@ class AdjustmentAgent:
         if names == [] and args == []:
             return {"success": False, "changes": [], "reason": "模型未确认明确调播，未修改周表"}
         return await execute_calls(self.schedules, post.uid, names, args, expected=schedule,
-                                   source_dynamic_id=post.id, operation_id=f"dynamic:{post.id}", dry_run=dry_run)
+                                   source_dynamic_id=post.id, operation_id=f"dynamic:{post.id}",
+                                   dry_run=dry_run, source_text=post.text)

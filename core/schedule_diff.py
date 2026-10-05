@@ -111,15 +111,20 @@ def summarize_change(change):
     return f"{_brief(plan)} 更新"
 
 
-def format_adjustment_notice(uid, changes, reason="", *, limit=5, reason_limit=60):
-    """调播通知正文：只列改动与一句依据，详细对比留给 /vt_revisions。"""
+def format_adjustment_notice(uid, changes, reason="", *, source_text="", limit=5,
+                             reason_limit=60, source_limit=100):
+    """调播通知正文：动态原文摘要 + 改动 + 一句依据，详细对比留给 /vt_revisions。"""
     lines = [f"UID {uid} 调播生效"]
+    source = " ".join((source_text or "").split())
+    if source:
+        lines.append("动态：" + (source[:source_limit] + "…" if len(source) > source_limit else source))
     items = list(changes or [])
     for change in items[:limit]:
         lines.append("· " + summarize_change(change))
     if len(items) > limit:
         lines.append(f"（另有 {len(items) - limit} 条，见 /vt_revisions）")
-    text = " ".join((reason or "").split())
-    if text:
-        lines.append("依据：" + (text[:reason_limit] + "…" if len(text) > reason_limit else text))
+    reason_text = " ".join((reason or "").split())
+    if reason_text:
+        lines.append("依据：" + (reason_text[:reason_limit] + "…"
+                                 if len(reason_text) > reason_limit else reason_text))
     return "\n".join(lines)

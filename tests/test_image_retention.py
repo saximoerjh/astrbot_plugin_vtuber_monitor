@@ -57,6 +57,18 @@ async def test_prune_keeps_recent_schedules_and_drops_the_rest(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prune_caps_notice_images(tmp_path):
+    """通知附带的动态图只按数量保留最近若干张，避免又长成一个无上限目录。"""
+    data = DataManager(tmp_path)
+    await data.initialize()
+    for index in range(4):
+        await data.save_notice_image(1, f"dynamic-{index}", f"image-{index}".encode())
+    result = await data.prune_schedule_images(keep_notices=2)
+    assert result["notices"] == 2
+    assert len(list((tmp_path / "notice_images").glob("*"))) == 2
+
+
+@pytest.mark.asyncio
 async def test_prune_keeps_the_image_a_pending_scan_is_waiting_for(tmp_path):
     """待确认周次的任务还要用这张图重试，不能被保留策略当垃圾清掉。"""
     data = DataManager(tmp_path)

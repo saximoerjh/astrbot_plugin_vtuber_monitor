@@ -120,7 +120,7 @@ class ScheduleService:
             expected=None, source_id="", reason="placeholder")
 
     async def apply_operations(self, uid, operations, *, source_dynamic_id="", operation_id="",
-                               expected=None, dry_run=False):
+                               expected=None, dry_run=False, source_text=""):
         uid = validate_uid(uid)
         if source_dynamic_id and not re.fullmatch(r"[0-9]{1,30}", source_dynamic_id):
             raise ValueError("调播来源动态 ID 无效。")
@@ -199,15 +199,22 @@ class ScheduleService:
         content["revision"] = old.get("revision", 0) + 1
         notification = None
         if self.adjustment_push:
-            # 附上触发调播的那条动态截图；截不到就只发文字。
+            # 附上触发调播的那条动态：优先它的原图（多张就都发），取不到再退回整页截图。
             image_path = ""
             if self.notice_image is not None and source_dynamic_id and not dry_run:
                 try:
-                    image_path = await self.notice_image(uid, source_dynamic_id) or ""
+                    shots = await self.notice_image(uid, source_dynamic_id) or []
                 except Exception:
                     logger.warning("Adjustment notice screenshot failed uid=%s", uid)
+                    shots = []
+                if isinstance(shots, str):
+                    shots = [shots] if shots else []
+                paths = [str(path) for path in shots if path]
+                image_path = (json.dumps(paths, ensure_ascii=False) if len(paths) > 1
+                              else (paths[0] if paths else ""))
             notification = ("schedule_adjusted",
-                            format_adjustment_notice(uid, changes, reason), image_path)
+                            format_adjustment_notice(uid, changes, reason, source_text=source_text),
+                            image_path)
         success = dry_run or await self.data.save_weekly_schedule(
             content, expected=old, source_id=source_dynamic_id, reason=reason,
             operation_id=operation_id, notification=notification)

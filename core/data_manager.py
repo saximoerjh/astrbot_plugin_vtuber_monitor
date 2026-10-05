@@ -271,18 +271,21 @@ class DataManager:
             return str(path.resolve())
         return await asyncio.to_thread(write)
 
-    async def prune_schedule_images(self, *, keep_weeks=4, grace_days=7, today=None):
+    async def prune_schedule_images(self, *, keep_weeks=4, grace_days=7, today=None,
+                                    keep_notices=200):
         """清掉不会再被用到的候选原图，避免 `schedule_images/` 无限增长。
 
         保留三类：最近 keep_weeks 周里被判为周表的候选图（parsed/unchanged/archived）、
         这些周归档周表引用的原图、以及 grace_days 天内新写入的任何候选图。
         其余（孤儿图、以及过期的不合格候选图）删除，并把候选行里指向已删文件的
         路径清空，避免留下悬空路径。判定用的临时目录每轮整目录清空。
+        通知附带的动态图只按数量保留最近 keep_notices 张。
         """
-        if keep_weeks < 0 or grace_days < 0:
-            raise ValueError("保留周数与宽限天数不能为负。")
+        if keep_weeks < 0 or grace_days < 0 or keep_notices < 0:
+            raise ValueError("保留周数、宽限天数与通知图片数量不能为负。")
         images = self.path.parent / "schedule_images"
         scratch = self.path.parent / "classify_tmp"
+        notices = self.path.parent / "notice_images"
         cutoff = ((today or china_today()) - timedelta(weeks=keep_weeks)).isoformat()
         deadline = datetime.fromisoformat(utc_now()) - timedelta(days=grace_days)
 
@@ -343,7 +346,16 @@ class DataManager:
                         freed += path.stat().st_size
                         path.unlink(missing_ok=True)
                         scratch_files += 1
-            return {"images": len(removed), "scratch": scratch_files, "freed": freed}
+            notice_files = 0
+            if notices.is_dir():
+                stale = sorted((path for path in notices.iterdir() if path.is_file()),
+                               key=lambda path: path.stat().st_mtime, reverse=True)
+                for path in stale[keep_notices:]:
+                    freed += path.stat().st_size
+                    path.unlink(missing_ok=True)
+                    notice_files += 1
+            return {"images": len(removed), "scratch": scratch_files,
+                    "notices": notice_files, "freed": freed}
 
         return await asyncio.to_thread(self._run, prune)
 
