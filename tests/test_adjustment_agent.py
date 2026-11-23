@@ -2,19 +2,24 @@ import asyncio
 import json
 import time
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost, VtuberState
+from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
 from astrbot_plugin_vtuber_monitor.core.schedule_models import (
+    china_today,
     china_week_start_timestamp,
 )
 from astrbot_plugin_vtuber_monitor.services.adjustment_agent import AdjustmentAgent
 from astrbot_plugin_vtuber_monitor.services.dynamic_listener import DynamicListener
 from astrbot_plugin_vtuber_monitor.services.dispatcher import Dispatcher
+from astrbot_plugin_vtuber_monitor.services.schedule_discovery import ScheduleDiscovery
+from astrbot_plugin_vtuber_monitor.services.schedule_parser import ScheduleParser
+from astrbot_plugin_vtuber_monitor.services.schedule_service import ScheduleService
 from test_schedule_service import setup_schedule
 
 
@@ -247,3 +252,110 @@ async def test_full_dynamic_tool_revision_and_notification_pipeline(tmp_path):
     assert (await service.get_weekly_schedule(1))["revision"] == 2
     assert not await data.pending_adjustments(1)
     assert not await data.pending_notifications()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_week", [True, False])
+async def test_poster_image_takes_precedence_over_adjustment_and_creates_week_when_needed(
+    tmp_path, existing_week
+):
+    if existing_week:
+        data, service, _ = await setup_schedule(tmp_path)
+    else:
+        data = DataManager(tmp_path)
+        await data.initialize()
+        service = ScheduleService(data)
+    service.schedule_push = service.adjustment_push = True
+    await data.add_subscription(
+        VtuberState(1, "one"), "group", "special", initial_dynamics=[]
+    )
+    # 即使本周周表未建立且前面已有一整批纯文字动态，也不能挡住周表动态。
+    if not existing_week:
+        await data.ingest_dynamics(1, [post(id=str(i)) for i in range(10, 31)])
+    dynamic = replace(
+        post("周年纪念歌回临时新增，看附图", "101"),
+        images=("https://i0.hdslb.com/portrait.png", "https://i0.hdslb.com/poster.png"),
+    )
+    today = china_today()
+    week = (today - timedelta(days=today.weekday())).isoformat()
+    vision = SimpleNamespace(
+        llm_generate=AsyncMock(
+            side_effect=[
+                SimpleNamespace(completion_text='{"status":"not_schedule"}'),
+                SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "week_start": week,
+                            "streams": [
+                                {
+                                    "date": today.isoformat(),
+                                    "start_time": "21:00",
+                                    "title": "图片上的纪念歌回",
+                                }
+                            ],
+                        }
+                    )
+                ),
+            ]
+        )
+    )
+    bili = SimpleNamespace(
+        get_dynamics_since=AsyncMock(return_value=[dynamic]),
+        download_image=AsyncMock(return_value=b"\x89PNGfixture"),
+    )
+    adjustment = agent(service)
+    discovery = ScheduleDiscovery(data, bili, ScheduleParser(vision, "vision"), service)
+    listener = DynamicListener(data, bili, adjustment=adjustment, discovery=discovery)
+    await listener.poll_once()
+    await listener.process_pending()
+
+    adjustment.context.llm_generate.assert_not_awaited()
+    assert vision.llm_generate.await_count == 2
+    schedule = await service.get_weekly_schedule(1)
+    assert schedule["source_dynamic_id"] == dynamic.id
+    assert [entry["title"] for entry in schedule["streams"]] == ["图片上的纪念歌回"]
+    assert [job["kind"] for job in await data.pending_notifications()] == [
+        "schedule_updated"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "responses,expected_adjustments",
+    [
+        (['{"status":"not_schedule"}'], 1),
+        (['{"status":"needs_date"}'], 0),
+        ([TimeoutError("timeout"), '{"status":"not_schedule"}'], 1),
+    ],
+)
+async def test_dynamic_image_route_allows_adjustment_only_after_clear_negative(
+    tmp_path, responses, expected_adjustments
+):
+    data, service, _ = await setup_schedule(tmp_path)
+    await data.add_subscription(
+        VtuberState(1, "one"), "group", "special", initial_dynamics=[]
+    )
+    dynamic = replace(post(), images=("https://i0.hdslb.com/attachment.png",))
+    await data.ingest_dynamics(1, [dynamic])
+    vision = SimpleNamespace(
+        llm_generate=AsyncMock(
+            side_effect=[
+                result
+                if isinstance(result, Exception)
+                else SimpleNamespace(completion_text=result)
+                for result in responses
+            ]
+        )
+    )
+    bili = SimpleNamespace(download_image=AsyncMock(return_value=b"\x89PNGfixture"))
+    adjustment = agent(service)
+    discovery = ScheduleDiscovery(data, bili, ScheduleParser(vision, "vision"), service)
+    listener = DynamicListener(data, bili, adjustment=adjustment, discovery=discovery)
+    await listener.process_pending()
+    if len(responses) > 1:
+        adjustment.context.llm_generate.assert_not_awaited()
+        queued = await data.pending_adjustments(1)
+        assert "未能确认动态配图" in queued[0]["last_error"]
+        await listener.process_pending()
+    assert adjustment.context.llm_generate.await_count == expected_adjustments
+    assert not await data.pending_adjustments(1)

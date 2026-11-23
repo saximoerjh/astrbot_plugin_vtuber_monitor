@@ -284,7 +284,7 @@ class ScheduleWatch:
                         path = await self.data.save_schedule_image(
                             uid, post.id, url, raw
                         )
-                        chosen = (post, url, path, fingerprint)
+                        chosen = (post, url, path, fingerprint, index)
                         break
                     await self._remember_skip(uid, post, url, index, raw)
                 except BiliRateLimited:
@@ -295,7 +295,7 @@ class ScheduleWatch:
             if chosen:
                 break
         if chosen:
-            post, url, path, fingerprint = chosen
+            post, url, path, fingerprint, index = chosen
             pending = state.get("pending")
             if not pending or pending["fingerprint"] != fingerprint:
                 week = monday(today).isoformat()
@@ -312,6 +312,7 @@ class ScheduleWatch:
                     "count": len(observations),
                     "dynamic_id": post.id,
                     "image_url": url,
+                    "image_index": index,
                     "path": path,
                     "text": post.text,
                 }
@@ -465,8 +466,22 @@ class ScheduleWatch:
             raise ValueError("已有更新来源的周表，需要手动确认基准")
         # 可恢复的任务在导入前就固定了目标周；导入后崩溃只会重试
         # 这次幂等导入，而不会把锚点再往后推一周。
-        await self.schedules.store_parsed_schedule(
+        status = await self.schedules.store_parsed_schedule(
             schedule, import_key=f"scan:{job['observed_on']}:{job['fingerprint']}"
+        )
+        await self.data.save_schedule_candidate(
+            {
+                "uid": uid,
+                "dynamic_id": str(job["dynamic_id"]),
+                "image_url": job["image_url"],
+                "image_index": job.get("image_index", 1),
+                "text_fingerprint": hashlib.sha256(job["text"].encode()).hexdigest(),
+                "evaluated_on": china_today().isoformat(),
+                "local_image_path": job["path"],
+                "status": status,
+                "week_start": schedule.week_start,
+                "checked_at": datetime.now(CHINA).isoformat(timespec="seconds"),
+            }
         )
         state.update(
             week=schedule.week_start,

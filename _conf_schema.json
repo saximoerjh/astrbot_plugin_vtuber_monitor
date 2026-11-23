@@ -150,7 +150,7 @@
         "description": "未兑现判定（小时）",
         "type": "float",
         "default": 2,
-        "hint": "排期到点后超过该小时数仍未开播、且没有被动态调播的场次，在周表中标记为未兑现。"
+        "hint": "原定开播后连续观察该时长，仍未开播才标记未兑现。排期晚到或观察有空档时显示无法确认。"
       }
     }
   },
@@ -246,7 +246,7 @@
     "invisible": true
   },
   "unfulfilled_after_hours": {
-    "description": "排期到点后仍未开播的判定小时数，超过即在周表标记为未兑现；默认 2 小时",
+    "description": "从排期开播时间起，需要连续观察才能判定未兑现的小时数；默认 2 小时",
     "type": "float",
     "default": 2,
     "invisible": true

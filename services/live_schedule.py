@@ -22,6 +22,7 @@ from ..core.data_manager import (
 )
 from ..core.schedule_models import (
     UNFULFILLED_STATUS,
+    UNVERIFIED_STATUS,
     StreamPlan,
     WeeklySchedule,
     is_pending_title,
@@ -61,7 +62,9 @@ def interval_of(session):
         "start": session["start_time"],
         "end": session["end_time"],
         "start_basis": session["start_basis"],
-        "end_basis": "observed" if session["end_time"] else None,
+        "end_basis": (session.get("end_basis") or "observed")
+        if session["end_time"]
+        else None,
     }
 
 
@@ -155,6 +158,7 @@ class LiveScheduleRecorder:
             self.min_live_duration <= timedelta(0)
             or not session["start_time"]
             or not session["end_time"]
+            or session.get("end_basis") == "last_seen"
         ):
             return False
         try:
@@ -188,7 +192,7 @@ class LiveScheduleRecorder:
     def awaiting_start(plan):
         """还没开播、也没被调播或取消的排期场次：未兑现的候选。"""
         return (
-            plan.get("status") == "scheduled"
+            plan.get("status") in ("scheduled", UNFULFILLED_STATUS, UNVERIFIED_STATUS)
             and plan.get("source") != EXTRA_SOURCE
             and not plan.get("rescheduled_start_time")
             and bool(plan.get("start_time"))
@@ -238,13 +242,7 @@ class LiveScheduleRecorder:
         return repaired
 
     async def mark_unfulfilled(self, uid, now=None):
-        """排期到点后仍没开播的场次记为未兑现。
-
-        只处理「场次自己所在的周」，因为周日 23:00 的场次到点两小时已经跨周，
-        那时它属于上一周的周表。已经在直播轮询里，所以不额外起任务。
-        另外只在周表**早于该场次开播**就解析到的情况下才判：解析之前的日子插件
-        根本不知道有这个排期，也没有观测可以回补，判成未兑现就是误伤。
-        """
+        """只有当时已知排期且连续观测覆盖判定窗口，才记为未兑现。"""
         now = now or datetime.now(CHINA)
         today = now.date()
         marked = 0
@@ -254,38 +252,45 @@ class LiveScheduleRecorder:
             schedule = await self.data.get_historical_schedule(uid, week)
             if schedule is None:
                 continue
-            imported = self._imported_at(
-                await self.data.schedule_imported_at(uid, week)
-            )
             streams = [dict(plan) for plan in schedule["streams"]]
-            changed = False
-            count = 0
+            due = []
             for plan in streams:
-                planned = self._planned_start(plan)
-                if plan.get("status") == UNFULFILLED_STATUS:
-                    # 旧版本按“没观测到就判”写下的错标记：周表其实是这场之后才
-                    # 解析到的，同一轮里撤销，免得永久留红。
-                    if (
-                        imported is not None
-                        and planned is not None
-                        and planned < imported
-                    ):
-                        plan["status"] = "scheduled"
-                        plan["revision"] = plan.get("revision", 0) + 1
-                        changed = True
+                if self.awaiting_start(plan):
+                    planned = self._planned_start(plan)
+                    if now >= planned + self.unfulfilled_after:
+                        due.append((plan, planned))
+            if not due:
+                continue
+
+            def entry(plan):
+                return (plan["id"], plan["date"], plan["start_time"])
+
+            imported = await self.data.schedule_entry_import_times(
+                uid, week, [entry(plan) for plan, _ in due]
+            )
+            coverage = await self.data.live_coverage(
+                uid, min(planned for _, planned in due)
+            )
+            count = 0
+            changed = False
+            for plan, planned in due:
+                known = self._imported_at(imported.get(entry(plan)))
+                deadline = (planned + self.unfulfilled_after).timestamp()
+                covered = any(
+                    first <= planned.timestamp() and last >= deadline
+                    for first, last in coverage
+                )
+                status = (
+                    UNFULFILLED_STATUS
+                    if known is not None and known <= planned and covered
+                    else UNVERIFIED_STATUS
+                )
+                if plan["status"] == status:
                     continue
-                if not self.awaiting_start(plan):
-                    continue
-                if planned is None or now < planned + self.unfulfilled_after:
-                    continue
-                if imported is None or planned < imported:
-                    # 周表是这场排期结束之后才解析到的：插件当时没在看着这一场，
-                    # 事后也无法从接口回补，保持原状不判。
-                    continue
-                plan["status"] = UNFULFILLED_STATUS
+                plan["status"] = status
                 plan["revision"] = plan.get("revision", 0) + 1
                 changed = True
-                count += 1
+                count += status == UNFULFILLED_STATUS
             if not changed:
                 continue
             if await self._save(uid, week, schedule, streams):
@@ -392,7 +397,7 @@ class LiveScheduleRecorder:
         if changed:
             plan["actual_intervals"] = intervals
             plan["revision"] = plan.get("revision", 0) + 1
-        if plan.get("status") == UNFULFILLED_STATUS:
+        if plan.get("status") in (UNFULFILLED_STATUS, UNVERIFIED_STATUS):
             # 当天迟到的直播回填了这条：撤销未兑现标记，按正常结果记录。
             plan["status"] = "completed" if session["end_time"] else "scheduled"
             changed = True

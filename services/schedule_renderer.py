@@ -13,7 +13,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from ..core.schedule_models import UNFULFILLED_STATUS, china_today
+from ..core.schedule_models import UNFULFILLED_STATUS, UNVERIFIED_STATUS, china_today
 from .schedule_display import format_live_summary
 
 CHINA = timezone(timedelta(hours=8))
@@ -36,6 +36,7 @@ STATUS_LABELS = {
     "cancelled": "已取消",
     "unknown": "待定",
     UNFULFILLED_STATUS: "未兑现",
+    UNVERIFIED_STATUS: "无法确认",
 }
 STATUS_CLASSES = {
     "scheduled": "s-scheduled",
@@ -93,7 +94,7 @@ def _timing_stats(streams):
             continue
         span = timedelta()
         for item in intervals:
-            if item.get("end"):
+            if item.get("end") and item.get("end_basis") != "last_seen":
                 span += datetime.fromisoformat(item["end"]) - datetime.fromisoformat(
                     item["start"]
                 )
@@ -162,6 +163,8 @@ def _actual_line(plan_date, entry):
         if start.date().isoformat() == plan_date
         else start.strftime("%m-%d %H:%M")
     )
+    if entry.get("end_basis") == "last_seen":
+        return f"{start_text} 起 · 下播时间未知"
     if end is None:
         return f"{start_text} 起 · 直播中"
     gap = (end.date() - start.date()).days

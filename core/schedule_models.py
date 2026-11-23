@@ -38,6 +38,7 @@ def is_pending_title(title):
 # 排期到了却没开播、且当天没有动态调播的场次。当天之内还可以被迟到的
 # 直播回填撤销，过了当地日期就定稿。
 UNFULFILLED_STATUS = "unfulfilled"
+UNVERIFIED_STATUS = "unverified"
 
 
 def parse_week_override(value, today=None, *, limit_range=True):
@@ -201,7 +202,7 @@ def validate_schedule(schedule, today=None, allow_history=False):
                 raise ValueError("下播时间不能早于开播时间。")
             if interval["start_basis"] not in ("api", "observed") or interval[
                 "end_basis"
-            ] not in (None, "observed"):
+            ] not in (None, "observed", "last_seen"):
                 raise ValueError("实际直播时间来源无效。")
         if (
             not isinstance(stream.title, str)
@@ -216,6 +217,7 @@ def validate_schedule(schedule, today=None, allow_history=False):
             "completed",
             "unknown",
             UNFULFILLED_STATUS,
+            UNVERIFIED_STATUS,
         ):
             raise ValueError("直播状态无效。")
         if stream.source not in (

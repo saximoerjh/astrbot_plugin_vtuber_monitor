@@ -11,6 +11,9 @@ from ..bili_client import BiliRateLimited
 
 from ..core.models import VtuberState, utc_now
 
+COVERAGE_SLACK_SECONDS = 30
+MAX_COVERAGE_GAP_SECONDS = 300
+
 
 def live_notification(state):
     kind = "live_start" if state.is_live else "live_end"
@@ -42,6 +45,10 @@ class LiveListener:
         self.bili = bili
         self.interval = interval
         self.jitter = jitter
+        # 允许正常轮询抖动和请求耗时。太稀疏的采样不足以证明连续观察。
+        self._coverage_gap = min(
+            interval + jitter + COVERAGE_SLACK_SECONDS, MAX_COVERAGE_GAP_SECONDS
+        )
         self.special_only = special_only
         self.cooldown_until = 0
         self._poll_lock = asyncio.Lock()
@@ -53,6 +60,7 @@ class LiveListener:
         self._pending_sync = set()
         self._sync_ready = asyncio.Event()
         self._resume_uid = None
+        self._covered_uids = set()
 
     async def poll_once(self):
         async with self._poll_lock:
@@ -64,6 +72,7 @@ class LiveListener:
                 if self.special_only
                 else self.data.get_subscribed_uids()
             )
+            self._covered_uids.intersection_update(uids)
             if self._resume_uid in uids:
                 start = uids.index(self._resume_uid)
                 uids = uids[start:] + uids[:start]
@@ -80,13 +89,17 @@ class LiveListener:
                     await self.data.save_vtuber_state(
                         state,
                         notification=(*live_notification(state), self.special_only),
+                        coverage_gap=self._coverage_gap,
+                        coverage_reset=uid not in self._covered_uids,
                     )
+                    self._covered_uids.add(uid)
                     self.last_success_at = utc_now()
                     if self.schedule_recorder is not None:
                         self._pending_sync.add(uid)
                         self._sync_ready.set()
                 except BiliRateLimited as exc:
                     self.failures += 1
+                    self._covered_uids.clear()
                     self.cooldown_until = time.monotonic() + exc.retry_after
                     self._resume_uid = uids[(index + 1) % len(uids)]
                     logger.warning(
@@ -96,6 +109,7 @@ class LiveListener:
                     break
                 except Exception:
                     self.failures += 1
+                    self._covered_uids.discard(uid)
                     logger.exception("VTuber live poll failed uid=%s", uid)
             self.rounds += 1
 

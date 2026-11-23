@@ -20,6 +20,7 @@ from astrbot_plugin_vtuber_monitor.core.schedule_models import (
     schedule_from_parser,
 )
 from astrbot_plugin_vtuber_monitor.services.schedule_service import ScheduleService
+from astrbot_plugin_vtuber_monitor.services.schedule_discovery import ScheduleDiscovery
 from astrbot_plugin_vtuber_monitor.services.schedule_watch import (
     CHINA,
     ScheduleWatch,
@@ -183,6 +184,10 @@ async def test_changed_image_advances_the_week(tmp_path):
     state = await d.data.get_schedule_tracking(1)
     assert state["week"] == expected and state["pending"] is None
     assert await d.data.get_historical_schedule(1, expected)
+    calls = d.parser.parse.await_count
+    discovery = ScheduleDiscovery(d.data, d.bili, d.parser, d.schedules)
+    assert await discovery.process_dynamic(d.bili.get_latest_dynamics.return_value[0])
+    assert d.parser.parse.await_count == calls
 
 
 @pytest.mark.asyncio

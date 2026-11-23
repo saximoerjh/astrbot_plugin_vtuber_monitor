@@ -16,6 +16,11 @@ from .schedule_parser import ScheduleParseError
 from .schedule_watch import remember_schedule
 
 DEFAULT_KEYWORDS = ("周表", "本周", "schedule", "直播安排", "本周安排")
+IMPORTED_SCHEDULE_STATUSES = ("parsed", "unchanged", "archived")
+
+
+class ScheduleRouteError(ValueError):
+    code = "schedule_route_unresolved"
 
 
 class ScheduleDiscovery:
@@ -49,7 +54,36 @@ class ScheduleDiscovery:
         lock = self._locks.get(uid)
         return bool(lock and lock.locked())
 
-    async def scan(self, uid, posts=None, force=False, week_start=""):
+    async def process_dynamic(self, post):
+        """先解析配图。只有全部图片明确不是周表，才允许按正文调播。"""
+        try:
+            async with asyncio.timeout(120):
+                records = await self.scan(post.uid, [post], check_images=True)
+        except TimeoutError:
+            raise ScheduleRouteError("动态配图识别超时，暂不执行自动调播。") from None
+        if any(
+            record["status"] in (*IMPORTED_SCHEDULE_STATUSES, "needs_date")
+            or record.get("error_code") == "date_conflict"
+            for record in records
+        ):
+            return True
+        if unresolved := next(
+            (
+                record
+                for record in records
+                if record.get("error_code") != "not_schedule"
+            ),
+            None,
+        ):
+            detail = unresolved.get("error_message", "")
+            raise ScheduleRouteError(
+                f"未能确认动态配图是否为周表，暂不执行自动调播。{detail}"
+            )
+        return False
+
+    async def scan(
+        self, uid, posts=None, force=False, week_start="", *, check_images=False
+    ):
         uid = validate_uid(uid)
         override = parse_week_override(week_start)
         week_start = override.isoformat() if override else ""
@@ -57,19 +91,20 @@ class ScheduleDiscovery:
             if posts is None:
                 posts = await self.bili.get_latest_dynamics(uid)
             self.data._validate_posts(uid, posts)
-            previous = {
-                (r["dynamic_id"], r["image_url"]): r
-                for r in await self.data.get_schedule_candidates(uid)
-            }
+            candidates = await self.data.get_schedule_candidates(
+                uid,
+                dynamic_id=posts[0].id if check_images and len(posts) == 1 else None,
+            )
+            previous = {(r["dynamic_id"], r["image_url"]): r for r in candidates}
             results = []
             remembered = False
             # 扫描整页，包括动态水位线之外的旧置顶动态。
             for post in sorted(posts, key=lambda p: int(p.id), reverse=True):
-                if not self.is_candidate(post):
+                if not check_images and not self.is_candidate(post):
                     continue
+                fingerprint = hashlib.sha256(post.text.encode()).hexdigest()
                 for image_index, url in enumerate(post.images, 1):
                     old = previous.get((post.id, url))
-                    fingerprint = hashlib.sha256(post.text.encode()).hexdigest()
                     if (
                         not force
                         and old
@@ -80,13 +115,21 @@ class ScheduleDiscovery:
                         # 这样清理掉这类候选图之后也不会重新拉一遍。
                         continue
                     if (
+                        check_images
+                        and old
+                        and old.get("text_fingerprint") == fingerprint
+                        and old["status"] in IMPORTED_SCHEDULE_STATUSES
+                    ):
+                        results.append(old)
+                        break
+                    if (
                         old
                         and not force
                         and not week_start
                         and old.get("text_fingerprint") == fingerprint
                         and (
                             old.get("evaluated_on") == china_today().isoformat()
-                            or old["status"] in ("parsed", "unchanged", "archived")
+                            or old["status"] in IMPORTED_SCHEDULE_STATUSES
                         )
                         and old["status"] != "failed"
                         and Path(old["local_image_path"]).is_file()
@@ -96,7 +139,7 @@ class ScheduleDiscovery:
                         )
                     ):
                         results.append(old)
-                        if old["status"] in ("parsed", "unchanged", "archived"):
+                        if old["status"] in IMPORTED_SCHEDULE_STATUSES:
                             break
                         continue
                     record = {
@@ -163,7 +206,9 @@ class ScheduleDiscovery:
                             record["week_start"] = schedule.week_start
                             # 任何一次成功解析都更新定时检查的基准，
                             # 这样订阅时扫描、手动解析都会自动进入定时检查。
-                            if not remembered:
+                            if not remembered and (
+                                not check_images or record["status"] == "parsed"
+                            ):
                                 await remember_schedule(self.data, post, schedule, raw)
                                 remembered = True
                         record.pop("error_stage", None)
@@ -192,6 +237,6 @@ class ScheduleDiscovery:
                     results.append(record)
                     # 一条动态只认一张通过的周表图；
                     # 其余配图不得在同一轮扫描中覆盖它。
-                    if record["status"] in ("parsed", "unchanged", "archived"):
+                    if record["status"] in IMPORTED_SCHEDULE_STATUSES:
                         break
             return results

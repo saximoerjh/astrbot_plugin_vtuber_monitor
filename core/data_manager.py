@@ -78,6 +78,10 @@ class DataManager:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS live_sessions_open
                     ON live_sessions(uid) WHERE end_time IS NULL;
+                CREATE TABLE IF NOT EXISTS live_coverage (
+                    uid INTEGER NOT NULL, started_at REAL NOT NULL, last_at REAL NOT NULL,
+                    PRIMARY KEY(uid, started_at)
+                );
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     uid INTEGER NOT NULL, umo TEXT NOT NULL,
                     level TEXT NOT NULL CHECK(level IN ('normal', 'special')),
@@ -165,6 +169,9 @@ class DataManager:
                     db.execute(
                         "ALTER TABLE live_sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''"
                     )
+                for key in ("last_seen_at", "end_basis"):
+                    if key not in session_columns:
+                        db.execute(f"ALTER TABLE live_sessions ADD COLUMN {key} TEXT")
                 outbox_columns = {
                     row["name"]
                     for row in db.execute("PRAGMA table_info(schedule_outbox)")
@@ -219,6 +226,7 @@ class DataManager:
                     "adjustment_jobs": {
                         "created_at": "TEXT",
                         "last_error": "TEXT NOT NULL DEFAULT ''",
+                        "images_checked": "INTEGER NOT NULL DEFAULT 0",
                     },
                     "dynamic_checkpoints": {"floor_id": "TEXT NOT NULL DEFAULT '0'"},
                 }.items():
@@ -372,7 +380,7 @@ class DataManager:
                 db.execute(
                     """INSERT INTO adjustment_jobs (uid, dynamic_id, payload, created_at) VALUES (?, ?, ?, ?)
                     ON CONFLICT(uid,dynamic_id) DO UPDATE SET payload=excluded.payload,
-                    created_at=excluded.created_at, attempts=0, state='pending', last_error=''""",
+                    created_at=excluded.created_at, attempts=0, state='pending', last_error='', images_checked=0""",
                     (uid, post.id, payload, utc_now()),
                 )
         latest = str(max([watermark] + [int(p.id) for p in posts]))
@@ -710,16 +718,16 @@ class DataManager:
             ),
         )
 
-    async def get_schedule_candidates(self, uid):
+    async def get_schedule_candidates(self, uid, *, dynamic_id=None):
         uid = validate_uid(uid)
+        query = "SELECT payload FROM schedule_candidates WHERE uid=?"
+        args = (uid,)
+        if dynamic_id is not None:
+            query += " AND dynamic_id=?"
+            args += (dynamic_id,)
         return await asyncio.to_thread(
             self._run,
-            lambda db: [
-                json.loads(row[0])
-                for row in db.execute(
-                    "SELECT payload FROM schedule_candidates WHERE uid=?", (uid,)
-                )
-            ],
+            lambda db: [json.loads(row[0]) for row in db.execute(query, args)],
         )
 
     async def get_image_classifications(self, uid, dynamic_id, fingerprint):
@@ -806,20 +814,62 @@ class DataManager:
                 raise
             return False
 
-    async def schedule_imported_at(self, uid, week_start):
-        """这一周周表最早一次写进来的时间（= 首次导入时间）；没有记录返回 None。
+    async def schedule_entry_import_times(self, uid, week_start, entries):
+        """查找每个当前场次和时段连续存在的最早归档。"""
 
-        归档表每次写入都会追加一行，所以最早那行的 archived_at 就是首次导入时间，
-        后面的修订不会把它往后推。
-        """
-        row = await asyncio.to_thread(
-            self._run,
-            lambda db: db.execute(
-                "SELECT archived_at FROM weekly_schedule_archive WHERE uid=? AND week_start=? ORDER BY id LIMIT 1",
+        def read(db):
+            pending = set(entries)
+            imported = {}
+            for row in db.execute(
+                """SELECT payload, archived_at FROM weekly_schedule_archive
+                   WHERE uid=? AND week_start=? ORDER BY id DESC""",
                 (validate_uid(uid), week_start),
-            ).fetchone(),
+            ):
+                pending.intersection_update(
+                    (plan["id"], plan["date"], plan.get("start_time"))
+                    for plan in json.loads(row["payload"])["streams"]
+                    if plan.get("status") not in ("cancelled", "postponed")
+                    and plan.get("source") != "live_observation"
+                )
+                if not pending:
+                    break
+                imported.update(dict.fromkeys(pending, row["archived_at"]))
+            return imported
+
+        return await asyncio.to_thread(self._run, read)
+
+    async def live_coverage(self, uid, since):
+        return await asyncio.to_thread(
+            self._run,
+            lambda db: [
+                (row["started_at"], row["last_at"])
+                for row in db.execute(
+                    "SELECT started_at,last_at FROM live_coverage WHERE uid=? AND last_at>=?",
+                    (validate_uid(uid), since.timestamp()),
+                )
+            ],
         )
-        return row[0] if row else None
+
+    @staticmethod
+    def _record_live_coverage(db, uid, observed, max_gap, reset):
+        stamp = datetime.fromisoformat(observed).timestamp()
+        last = db.execute(
+            "SELECT started_at,last_at FROM live_coverage WHERE uid=? ORDER BY started_at DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
+        if last and stamp <= last["last_at"]:
+            return
+        if last and not reset and stamp - last["last_at"] <= max_gap:
+            db.execute(
+                "UPDATE live_coverage SET last_at=? WHERE uid=? AND started_at=?",
+                (stamp, uid, last["started_at"]),
+            )
+            return
+        db.execute("INSERT INTO live_coverage VALUES (?, ?, ?)", (uid, stamp, stamp))
+        db.execute(
+            "DELETE FROM live_coverage WHERE uid=? AND last_at<?",
+            (uid, stamp - timedelta(days=14).total_seconds()),
+        )
 
     async def remove_subscription(self, uid: int, umo: str) -> bool:
         args = (validate_uid(uid), validate_umo(umo))
@@ -974,7 +1024,7 @@ class DataManager:
             ),
         )
 
-    async def pending_adjustments(self, uid):
+    async def pending_adjustments(self, uid, *, unchecked_images_only=False):
         cutoff = china_week_start_timestamp(china_today())
         return await asyncio.to_thread(
             self._run,
@@ -983,10 +1033,24 @@ class DataManager:
                 for row in db.execute(
                     """SELECT * FROM adjustment_jobs WHERE uid=? AND state='pending'
                AND COALESCE(json_extract(payload,'$.published_at'), ?) >= ?
+               AND (?=0 OR (images_checked=0 AND json_array_length(payload,'$.images')>0))
                ORDER BY length(dynamic_id), dynamic_id LIMIT 20""",
-                    (validate_uid(uid), cutoff, cutoff),
+                    (validate_uid(uid), cutoff, cutoff, unchecked_images_only),
                 )
             ],
+        )
+
+    async def mark_adjustment_images_checked(self, uid, dynamic_id, payload):
+        return await asyncio.to_thread(
+            self._run,
+            lambda db: (
+                db.execute(
+                    """UPDATE adjustment_jobs SET images_checked=1, attempts=0, last_error=''
+                   WHERE uid=? AND dynamic_id=? AND state='pending' AND payload=?""",
+                    (validate_uid(uid), dynamic_id, payload),
+                ).rowcount
+                > 0
+            ),
         )
 
     async def finish_adjustment(
@@ -1085,6 +1149,16 @@ class DataManager:
             self._run,
             lambda db: db.execute(
                 "UPDATE schedule_outbox SET state='skipped' WHERE id=?",
+                (notification_id,),
+            ),
+        )
+
+    async def expire_notification(self, notification_id):
+        await asyncio.to_thread(
+            self._run,
+            lambda db: db.execute(
+                """UPDATE schedule_outbox SET state='expired', retry_at='', last_error=''
+                   WHERE id=? AND state='pending'""",
                 (notification_id,),
             ),
         )
@@ -1312,7 +1386,14 @@ class DataManager:
             ],
         )
 
-    async def save_vtuber_state(self, state: VtuberState, *, notification=None) -> bool:
+    async def save_vtuber_state(
+        self,
+        state: VtuberState,
+        *,
+        notification=None,
+        coverage_gap=None,
+        coverage_reset=False,
+    ) -> bool:
         """原子保存一次观测，并返回已知的直播状态是否发生了变化。
 
         状态跳变与待发送通知在同一事务提交。
@@ -1338,14 +1419,31 @@ class DataManager:
                 and old["is_live"] is not None
                 and bool(old["is_live"]) != state.is_live
             )
-            changed_at = (
-                utc_now() if changed else (old["last_live_change_at"] if old else None)
-            )
             observed = utc_now()
+            if coverage_gap is not None:
+                self._record_live_coverage(
+                    db, state.uid, observed, coverage_gap, coverage_reset
+                )
             active = db.execute(
                 "SELECT * FROM live_sessions WHERE uid=? AND end_time IS NULL",
                 (state.uid,),
             ).fetchone()
+            if state.is_live and active and state.live_started_at:
+                seen = active["last_seen_at"] or active["observed_at"]
+                reported = datetime.fromisoformat(state.live_started_at)
+                if datetime.fromisoformat(seen) < reported <= datetime.fromisoformat(
+                    observed
+                ) and (
+                    not active["start_time"]
+                    or datetime.fromisoformat(active["start_time"]) < reported
+                ):
+                    # 接口的新开播时间晚于上一场仍在线的观测。旧场只保留已知下界。
+                    db.execute(
+                        "UPDATE live_sessions SET end_time=?,end_basis='last_seen',synced=0 WHERE id=?",
+                        (seen, active["id"]),
+                    )
+                    active = None
+                    changed = True
             if state.is_live and active is None:
                 started = state.live_started_at or (observed if changed else None)
                 basis = (
@@ -1356,28 +1454,45 @@ class DataManager:
                     else "unknown"
                 )
                 db.execute(
-                    "INSERT INTO live_sessions(uid,start_time,observed_at,start_basis,title) VALUES (?,?,?,?,?)",
-                    (state.uid, started, observed, basis, state.live_title[:300]),
+                    """INSERT INTO live_sessions(uid,start_time,observed_at,start_basis,title,last_seen_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (
+                        state.uid,
+                        started,
+                        observed,
+                        basis,
+                        state.live_title[:300],
+                        observed,
+                    ),
                 )
             elif (
                 state.is_live and active["start_time"] is None and state.live_started_at
             ):
                 db.execute(
-                    "UPDATE live_sessions SET start_time=?, start_basis='api', synced=0 WHERE id=?",
-                    (state.live_started_at, active["id"]),
+                    "UPDATE live_sessions SET start_time=?, start_basis='api', last_seen_at=?, synced=0 WHERE id=?",
+                    (state.live_started_at, observed, active["id"]),
+                )
+            elif state.is_live:
+                db.execute(
+                    "UPDATE live_sessions SET last_seen_at=? WHERE id=?",
+                    (observed, active["id"]),
                 )
             elif not state.is_live and active:
                 db.execute(
                     "UPDATE live_sessions SET end_time=?,synced=0 WHERE id=?",
                     (observed, active["id"]),
                 )
+            changed_at = (
+                observed if changed else (old["last_live_change_at"] if old else None)
+            )
             db.execute(
                 """INSERT INTO vtubers
                 (uid, name, room_id, is_live, last_live_change_at) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(uid) DO UPDATE SET name=excluded.name, room_id=excluded.room_id,
                 is_live=excluded.is_live, last_live_change_at=excluded.last_live_change_at
                 WHERE vtubers.name IS NOT excluded.name OR vtubers.room_id IS NOT excluded.room_id
-                   OR vtubers.is_live IS NOT excluded.is_live""",
+                   OR vtubers.is_live IS NOT excluded.is_live
+                   OR vtubers.last_live_change_at IS NOT excluded.last_live_change_at""",
                 (state.uid, state.name, state.room_id, state.is_live, changed_at),
             )
             if changed and notification:

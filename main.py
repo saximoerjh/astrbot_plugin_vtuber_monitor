@@ -217,6 +217,7 @@ class MyPlugin(Star):
             data,
             self.bili,
             float(self.config.get("dynamic_poll_interval", 300)),
+            discovery=self.discovery,
             adjustment=self.adjustment
             if self.config.get("auto_adjustment_with_schedule", True)
             else None,
@@ -234,7 +235,7 @@ class MyPlugin(Star):
     async def _notification_line(self):
         """状态里那一行：当前实际生效的通知开关，以及它是从哪来的。"""
         flags = await self.dispatcher.notification_flags()
-        source = "配置实时读取" if await self._notification_flags() else "启动时的配置"
+        source = self.dispatcher.flags_source
 
         def word(value):
             return "开" if value else "关"
@@ -920,8 +921,7 @@ class MyPlugin(Star):
             )
             if table == "schedule_outbox":
                 value += f"、部分发送 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
-            else:
-                value += f"、已过期 {counts.get('expired', 0)}"
+            value += f"、已过期 {counts.get('expired', 0)}"
             if counts.get("pending"):
                 value += (
                     f"；最早入队 {local_time(oldest) if oldest else '旧记录未留时间'}"

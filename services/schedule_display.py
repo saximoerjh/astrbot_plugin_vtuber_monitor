@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from ..core.schedule_models import UNFULFILLED_STATUS
+from ..core.schedule_models import UNFULFILLED_STATUS, UNVERIFIED_STATUS
 
 CHINA = timezone(timedelta(hours=8))
 
@@ -21,6 +21,7 @@ def format_stream(plan):
         "cancelled": "已取消",
         "unknown": "待定",
         UNFULFILLED_STATUS: "未兑现",
+        UNVERIFIED_STATUS: "无法确认",
     }.get(plan["status"], plan["status"])
     if plan.get("source") == "live_observation":
         # 周表里没有对应场次，这条只承载实际观测。
@@ -45,7 +46,10 @@ def format_stream(plan):
             )
 
         start_label = "接口" if item["start_basis"] == "api" else "观测"
-        end_label = f"{stamp(item['end'])}（观测）" if item["end"] else "直播中"
+        if item.get("end_basis") == "last_seen":
+            end_label = "下播时间未知"
+        else:
+            end_label = f"{stamp(item['end'])}（观测）" if item["end"] else "直播中"
         lines.append(f"  实际：{stamp(item['start'])}（{start_label}）–{end_label}")
     if not intervals:
         lines.append("  实际：未记录")

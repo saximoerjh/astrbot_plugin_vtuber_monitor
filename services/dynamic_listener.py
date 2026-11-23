@@ -8,15 +8,17 @@ from astrbot.api import logger
 
 from ..bili_client import BiliError
 from ..core.models import DynamicPost, utc_now
+from .schedule_discovery import ScheduleRouteError
 
 
 class DynamicListener:
-    def __init__(self, data, bili, interval=300, *, adjustment=None):
+    def __init__(self, data, bili, interval=300, *, adjustment=None, discovery=None):
         if not math.isfinite(interval) or not 30 <= interval <= 86400:
             raise ValueError("dynamic_poll_interval 必须在 30 到 86400 秒之间。")
         self.data = data
         self.bili = bili
         self.adjustment = adjustment
+        self.discovery = discovery
         self.interval = interval
         self._lock = asyncio.Lock()
         self.rounds = 0
@@ -53,16 +55,43 @@ class DynamicListener:
 
     async def _process_uid(self, uid):
         try:
-            if not await self.adjustment.schedules.get_weekly_schedule(uid):
+            has_schedule = bool(
+                await self.adjustment.schedules.get_weekly_schedule(uid)
+            )
+            if not has_schedule and self.discovery is None:
                 return
-            for job in await self.data.pending_adjustments(uid):
+            jobs = await self.data.pending_adjustments(
+                uid, unchecked_images_only=not has_schedule
+            )
+            for job in jobs:
                 try:
                     payload = json.loads(job["payload"])
                     payload["images"] = tuple(payload["images"])
                     revision = payload.pop("_revision", "")
-                    await self.adjustment.process(
-                        DynamicPost(**payload), revision=revision
-                    )
+                    post = DynamicPost(**payload)
+                    if post.images and not job.get("images_checked"):
+                        if self.discovery is None:
+                            raise ScheduleRouteError(
+                                "周表识别服务未就绪，暂不执行自动调播。"
+                            )
+                        if await self.discovery.process_dynamic(post):
+                            await self.data.finish_adjustment(
+                                uid, post.id, True, payload=job["payload"]
+                            )
+                            if not has_schedule:
+                                has_schedule = bool(
+                                    await self.adjustment.schedules.get_weekly_schedule(
+                                        uid
+                                    )
+                                )
+                            continue
+                        if not await self.data.mark_adjustment_images_checked(
+                            uid, post.id, job["payload"]
+                        ):
+                            continue
+                    if not has_schedule:
+                        continue
+                    await self.adjustment.process(post, revision=revision)
                 except Exception as exc:
                     self.failures += 1
                     error = f"调播任务未完成（{type(exc).__name__}）"
@@ -70,6 +99,7 @@ class DynamicListener:
                         "model_timeout",
                         "model_error",
                         "schedule_conflict",
+                        "schedule_route_unresolved",
                     ):
                         error = str(exc)
                     await self.data.finish_adjustment(

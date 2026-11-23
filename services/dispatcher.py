@@ -3,10 +3,14 @@
 import asyncio
 import json
 import math
+from datetime import datetime, timedelta, timezone
 
 from astrbot.api import logger
 
 from ..core.models import FollowLevel, utc_now, validate_umo
+
+LIVE_NOTIFICATION_TTL = timedelta(minutes=30)
+LIVE_NOTIFICATION_FLAGS = {"live_start": "start", "live_end": "end"}
 
 
 def make_message(text):
@@ -88,8 +92,10 @@ class Dispatcher:
         self.normal_end = normal_end
         self.special_start = special_start
         self.special_end = special_end
-        # 传入后每次发送都重读一遍开关，改完配置不用重载插件也能立刻生效。
         self.flags_provider = flags_provider
+        self._last_flags = {}
+        self._flags_lock = asyncio.Lock()
+        self.flags_source = "启动时的配置"
         self.notice_image = notice_image
         self.send_timeout = send_timeout
         self.message_factory = message_factory
@@ -105,26 +111,32 @@ class Dispatcher:
         self.adjustment_enabled = False
 
     async def notification_flags(self):
-        """当前生效的四个通知开关；重读失败就退回启动时的值。"""
+        """读取通知开关；读不到时沿用最近一次成功读取的值。"""
         flags = {
             "normal_start": self.normal_start,
             "normal_end": self.normal_end,
             "special_start": self.special_start,
             "special_end": self.special_end,
         }
-        if self.flags_provider is None:
-            return flags
-        try:
-            latest = await self.flags_provider()
-        except Exception:
-            logger.warning(
-                "Unable to reload notification switches; using startup values"
-            )
-            return flags
-        for name, value in (latest or {}).items():
-            if name in flags:
-                flags[name] = bool(value)
-        return flags
+        async with self._flags_lock:
+            latest = None
+            if self.flags_provider is not None:
+                try:
+                    latest = await self.flags_provider()
+                except Exception:
+                    logger.warning("Unable to reload notification switches")
+            if latest is not None:
+                self._last_flags.update(
+                    (name, bool(value))
+                    for name, value in latest.items()
+                    if name in flags
+                )
+                self.flags_source = "配置实时读取"
+            else:
+                self.flags_source = (
+                    "上次有效配置" if self._last_flags else "启动时的配置"
+                )
+            return {**flags, **self._last_flags}
 
     async def flush_schedule_notifications(self, data, *, concurrency=1):
         async with self._schedule_lock:
@@ -133,14 +145,13 @@ class Dispatcher:
                 groups.setdefault(job["umo"], []).append(job)
             if not groups:
                 return
-            flags = await self.notification_flags()
             limit = asyncio.Semaphore(concurrency)
 
             async def deliver_group(jobs):
                 async with limit:
                     for job in jobs:
                         try:
-                            if not await self._deliver_job(data, job, flags):
+                            if not await self._deliver_job(data, job):
                                 break
                         except Exception as exc:
                             self.last_error = (
@@ -166,17 +177,27 @@ class Dispatcher:
                 )
             await asyncio.sleep(interval)
 
-    async def _deliver_job(self, data, job, flags):
+    async def _deliver_job(self, data, job):
         kind = job["kind"]
+        live_flag = LIVE_NOTIFICATION_FLAGS.get(kind)
+        if live_flag:
+            try:
+                created = datetime.fromisoformat(job["created_at"])
+                fresh = datetime.now(timezone.utc) - created < LIVE_NOTIFICATION_TTL
+            except (TypeError, ValueError):
+                fresh = False
+            if not fresh:
+                await data.expire_notification(job["id"])
+                return True
         subscription = await data.get_subscription(job["uid"], job["umo"])
         enabled = False
         if subscription is not None and (
             not job["created_at"] or subscription.created_at <= job["created_at"]
         ):
             special = subscription.level == FollowLevel.SPECIAL
-            if kind in ("live_start", "live_end"):
+            if live_flag:
                 level = "special" if special else "normal"
-                enabled = flags[f"{level}_{kind.removeprefix('live_')}"]
+                enabled = (await self.notification_flags())[f"{level}_{live_flag}"]
             elif special:
                 enabled = {
                     "schedule_updated": self.schedule_enabled,

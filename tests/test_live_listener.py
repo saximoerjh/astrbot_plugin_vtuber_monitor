@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -277,11 +278,46 @@ async def test_notification_switches_can_come_from_a_live_reload(tmp_path):
     dispatcher.special_end = False
     await observe_end()
     assert context.send_message.await_count == 1  # 配置现在开着 → 立刻发
-    # 重读失败时退回启动时的值，不能因为读配置出错就不发通知。
+    # 上次读到开启，启动时的关闭不能覆盖它。
     dispatcher.flags_provider = AsyncMock(side_effect=RuntimeError("boom"))
-    dispatcher.special_end = True
     await observe_end()
     assert context.send_message.await_count == 2
+    # 上次读到关闭，短暂读取失败也不能恢复启动时的开启。
+    dispatcher.special_end = True
+    dispatcher.flags_provider = AsyncMock(return_value={"special_end": False})
+    await observe_end()
+    dispatcher.flags_provider = AsyncMock(return_value=None)
+    await observe_end()
+    assert context.send_message.await_count == 2
+    assert dispatcher.flags_source == "上次有效配置"
+
+
+@pytest.mark.asyncio
+async def test_expired_live_notification_is_skipped_and_fresh_transition_delivered(
+    tmp_path,
+):
+    data = DataManager(tmp_path)
+    await data.initialize()
+    offline = VtuberState(1, "主播", 10, False)
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    with patch(
+        "astrbot_plugin_vtuber_monitor.core.data_manager.utc_now", return_value=old
+    ):
+        await data.add_subscription(offline, "chat")
+        await data.save_vtuber_state(
+            VtuberState(1, "主播", 10, True),
+            notification=("live_start", "过期开播", "", False),
+        )
+    await data.save_vtuber_state(
+        offline, notification=("live_end", "本次下播", "", False)
+    )
+    context = AsyncMock()
+    await Dispatcher(context, message_factory=str).flush_schedule_notifications(data)
+    context.send_message.assert_awaited_once_with("chat", "本次下播")
+    assert (await data.get_work_status())["schedule_outbox"] == {
+        "expired": 1,
+        "done": 1,
+    }
 
 
 @pytest.mark.asyncio
