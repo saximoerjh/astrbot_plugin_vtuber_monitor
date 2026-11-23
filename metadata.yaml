@@ -18,7 +18,7 @@ tags:
   - 开播提醒
   - 直播周表
   - 自动调播
-version: 1.0.0
+version: 1.0.1
 astrbot_version: ">=4.26,<5"
 author: hibiscus
 repo: https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
