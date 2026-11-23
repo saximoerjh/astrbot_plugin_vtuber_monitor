@@ -6,6 +6,7 @@ CHINA = timezone(timedelta(hours=8))
 
 
 def format_stream(plan):
+    """markdown 版场次：首行一行摘要，其余行缩进两格。纯文本平台读起来也是普通列表。"""
     day = plan.get("original_date") or plan["date"]
     start = plan.get("original_start_time", plan.get("start_time"))
     end = plan.get("original_end_time")
@@ -17,20 +18,20 @@ def format_stream(plan):
               "unknown": "待定", UNFULFILLED_STATUS: "未兑现"}.get(plan["status"], plan["status"])
     if plan.get("source") == "live_observation":
         # 周表里没有对应场次，这条只承载实际观测。
-        lines = [f"{plan['title']} [突击直播]"]
+        lines = [f"- **{plan['title']}**（突击直播）"]
     else:
-        lines = [f"{plan['title']} [{status}]", f"原定：{day}（周{weekday}）{original}"]
+        lines = [f"- **{plan['title']}** · {status}", f"  原定：{day}（周{weekday}）{original}"]
     if plan.get("rescheduled_start_time"):
-        lines.append(f"调播：{plan['rescheduled_date']} {plan['rescheduled_start_time']}")
+        lines.append(f"  调播：{plan['rescheduled_date']} {plan['rescheduled_start_time']}")
     intervals = plan.get("actual_intervals", [])
     for item in intervals:
         def stamp(value):
             return datetime.fromisoformat(value).astimezone(CHINA).strftime("%Y-%m-%d %H:%M:%S")
         start_label = "接口" if item["start_basis"] == "api" else "观测"
         end_label = f"{stamp(item['end'])}（观测）" if item["end"] else "直播中"
-        lines.append(f"实际：{stamp(item['start'])}（{start_label}）–{end_label}")
+        lines.append(f"  实际：{stamp(item['start'])}（{start_label}）–{end_label}")
     if not intervals:
-        lines.append("实际：未记录")
+        lines.append("  实际：未记录")
     return "\n".join(lines)
 
 

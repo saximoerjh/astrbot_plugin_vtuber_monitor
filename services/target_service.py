@@ -73,5 +73,11 @@ class TargetService:
 
     async def format_list(self, umo, user_id):
         rows = await self.data.get_target_mappings(umo, user_id)
-        return "\n".join(f"{' / '.join(r['aliases']) or r['name'] or r['uid']}（UID {r['uid']}）— {r['level']}"
-                         for r in rows) or "当前会话暂无订阅。"
+        if not rows:
+            return "当前会话暂无订阅。"
+        lines = []
+        for row in rows:
+            label = " / ".join(row["aliases"]) or row["name"] or row["uid"]
+            level = "特别关注" if str(row["level"]).lower() == "special" else "普通关注"
+            lines.append(f"- {label}（UID {row['uid']}）· **{level}**")
+        return "\n".join(lines)

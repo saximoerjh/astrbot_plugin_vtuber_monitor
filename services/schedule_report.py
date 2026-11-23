@@ -1,11 +1,11 @@
-"""精简的命令输出；逐图的详细诊断信息留在存储里。"""
+"""精简的命令输出（markdown）；逐图的详细诊断信息留在存储里。"""
 
 
 def format_schedule_report(records, uid, *, target="", week_start=""):
     groups = {}
     for record in records:
         groups.setdefault(record["dynamic_id"], []).append(record)
-    lines = [f"指定周次：{week_start} 起"] if week_start else []
+    lines = [f"**指定周次**：{week_start} 起"] if week_start else []
     needs_week = False
     for dynamic_id, items in groups.items():
         accepted = next((r for r in items if r["status"] in ("parsed", "archived", "unchanged")), None)
@@ -32,9 +32,9 @@ def format_schedule_report(records, uid, *, target="", week_start=""):
             summary = "、".join(reasons[:2]) + "，未保存。"
         else:
             summary = "未识别到周表。"
-        lines.append(f"{summary}\n查看动态：https://t.bilibili.com/{dynamic_id}")
+        lines.append(f"- {summary}\n  查看动态：https://t.bilibili.com/{dynamic_id}")
     if not groups:
-        lines.append(f"未发现周表候选。\n查看动态页：https://space.bilibili.com/{uid}/dynamic")
+        lines.append(f"- 未发现周表候选。\n  查看动态页：https://space.bilibili.com/{uid}/dynamic")
     if needs_week:
         lines.append(f"确认周次后重试：/vt_parse_schedule {target or uid} 本周（也支持上周、下周或日期）")
     return "\n\n".join(lines)

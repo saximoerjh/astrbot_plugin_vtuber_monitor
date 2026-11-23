@@ -25,4 +25,4 @@ def test_each_dynamic_has_own_link_and_empty_scan_links_to_profile():
     assert "https://t.bilibili.com/123" in text and "https://t.bilibili.com/456" in text
     assert "图片下载失败" in text
     text = format_schedule_report([], 1, week_start="2026-09-28")
-    assert "指定周次：2026-09-28" in text and "https://space.bilibili.com/1/dynamic" in text
+    assert "**指定周次**：2026-09-28" in text and "https://space.bilibili.com/1/dynamic" in text

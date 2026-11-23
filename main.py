@@ -1,7 +1,7 @@
 ﻿from astrbot.api import AstrBotConfig, logger
 import asyncio
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from astrbot.api.event import AstrMessageEvent, filter
@@ -58,7 +58,7 @@ def markdown_reply(event, text):
     return result
 
 
-@register(PLUGIN_NAME, "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.43")
+@register(PLUGIN_NAME, "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.45")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -371,7 +371,7 @@ class MyPlugin(Star):
             if override:
                 options["week_start"] = override.isoformat()
             records = await self.discovery.scan(uid, **options)
-            yield event.plain_result(format_schedule_report(
+            yield markdown_reply(event, format_schedule_report(
                 records, uid, target=target, week_start=override.isoformat() if override else ""))
         except (ValueError, BiliError) as exc:
             link = f"\n查看动态页：https://space.bilibili.com/{resolved_uid}/dynamic" if resolved_uid else ""
@@ -390,6 +390,16 @@ class MyPlugin(Star):
             week_start = week.isoformat() if week else ""
             uid = await self._resolve_target(event, uid)
             schedule = await self.schedules.get_weekly_schedule(uid, week_start)
+            if self._schedule_blank(schedule) and await self._can_parse_on_view(uid, week_start, event):
+                # 主播常在定时扫描时间点之间就发了周表；用户主动查看时补一次解析，
+                # 省得非要等到时间点。只在缓存确实为空、且本会话是特别关注时才做。
+                yield event.plain_result("本周周表尚未解析，正在抓取置顶动态，请稍候…")
+                try:
+                    await self.discovery.scan(uid)
+                except Exception:
+                    # 解析失败不回滚已有内容，照旧展示当前缓存。
+                    logger.warning("On-demand schedule parse failed uid=%s", uid)
+                schedule = await self.schedules.get_weekly_schedule(uid, week_start)
             if schedule is None:
                 text = (f"未找到 {week_start} 起始的周表。" if week_start else "未找到本周周表。")
                 text += "可用 /vt_schedule_history <UID> 查看缓存周次，或由管理员运行 /vt_parse_schedule <UID>。"
@@ -408,12 +418,46 @@ class MyPlugin(Star):
                 else:
                     yield event.image_result(path)
                     return
-            text = f"周表起始日：{schedule['week_start']}；修订 {schedule.get('revision', 0)}\n"
-            text += "\n\n".join(format_stream(p) for p in schedule["streams"])
-            text += "\n\n" + format_live_summary(summary)
-            yield event.plain_result(text)
+            by_day = {}
+            for plan in schedule["streams"]:
+                by_day.setdefault(plan["date"], []).append(plan)
+            blocks = [f"## 周表 · {schedule['week_start']} 起（修订 {schedule.get('revision', 0)}）"]
+            for day in sorted(by_day):
+                weekday = "一二三四五六日"[date.fromisoformat(day).weekday()]
+                blocks.append(f"### 周{weekday} {day[5:]}")
+                blocks += [format_stream(plan) for plan in by_day[day]]
+            blocks += ["---", format_live_summary(summary)]
+            yield markdown_reply(event, "\n\n".join(blocks))
         except ValueError as exc:
             yield event.plain_result(str(exc))
+
+    @staticmethod
+    def _schedule_blank(schedule):
+        """没有任何可用排期：完全没有周表，或只有一张空的占位容器（还没排期）。"""
+        if schedule is None:
+            return True
+        return not schedule.get("streams") and not str(schedule.get("source_dynamic_id") or "")
+
+    async def _can_parse_on_view(self, uid, week_start, event):
+        """查看周表时能否顺手解析一次：本会话特别关注 + 查的是本周 + 有模型 + 没在扫。
+
+        `/vt_schedule` 所有人可用，所以这里限制得比 `/vt_parse_schedule` 严：
+        只有当前会话订阅且是特别关注的主播，才允许被动触发解析（查询纯数字 UID
+        不会命中，避免任意 UID 都能烧模型 token）。
+        """
+        if self.discovery is None or not getattr(self.discovery.parser, "provider_id", ""):
+            return False
+        today = china_today()
+        if week_start and week_start != (today - timedelta(days=today.weekday())).isoformat():
+            return False
+        if getattr(self.discovery, "scanning", False):
+            return False
+        try:
+            rows = await self.targets.data.get_target_mappings(event.unified_msg_origin, event.get_sender_id())
+        except Exception:
+            return False
+        row = next((item for item in rows if item["uid"] == uid), None)
+        return row is not None and str(row.get("level", "")).lower() == "special"
 
     async def _live_summary(self, uid, week_start):
         """已记录与缺失的观测统计；失败时返回 None，由展示层标注统计失败。"""
@@ -463,8 +507,8 @@ class MyPlugin(Star):
         try:
             uid = await self._resolve_target(event, uid)
             weeks = await self.schedules.get_schedule_history(uid)
-            text = "\n".join(f"{w['week_start']}（{w['versions']} 个存档版本）" for w in weeks)
-            yield event.plain_result(text or "暂无历史周表缓存。")
+            text = "\n".join(f"- {w['week_start']}（{w['versions']} 个存档版本）" for w in weeks)
+            yield markdown_reply(event, f"**已缓存的周表**\n{text}" if text else "暂无历史周表缓存。")
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
@@ -481,7 +525,8 @@ class MyPlugin(Star):
         try:
             uid = await self._resolve_target(event, uid)
             result = await self.adjustment.process(DynamicPost(uid, str(time.time_ns()), text, int(time.time())), dry_run=True)
-            yield event.plain_result("调播预演（未保存、未推送）\n" + (format_diff(result["changes"]) or result["reason"]))
+            yield markdown_reply(event, "**调播预演**（未保存、未推送）\n\n"
+                                 + (format_diff(result["changes"]) or result["reason"]))
         except ValueError as exc:
             yield event.plain_result(str(exc))
         except Exception:
@@ -494,10 +539,12 @@ class MyPlugin(Star):
         try:
             uid = await self._resolve_target(event, uid)
             rows = await self.schedules.data.get_schedule_revisions(uid)
-            text = "\n\n".join(f"#{r['id']} {r['created_at']} {r['reason'][:200]}\n"
-                                 f"来源动态：{r['source_dynamic_id'] or '手动'}\n"
-                                 + format_diff(schedule_diff(r['old_value'], r['new_value'])) for r in rows)
-            yield event.plain_result(text[:10000] or "暂无周表修订记录。")
+            text = "\n\n".join(
+                f"### #{r['id']} · {local_time(r['created_at'])}\n"
+                f"**来源**：{'https://t.bilibili.com/' + r['source_dynamic_id'] if r['source_dynamic_id'] else '手动'}\n"
+                f"**依据**：{(r['reason'] or '').strip()[:200]}\n\n"
+                + format_diff(schedule_diff(r['old_value'], r['new_value'])) for r in rows)
+            yield markdown_reply(event, text[:10000] or "暂无周表修订记录。")
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
@@ -523,7 +570,7 @@ class MyPlugin(Star):
         except Exception:
             logger.exception("VTuber list failed")
             text = "读取订阅失败，请检查插件日志。"
-        yield event.plain_result(text)
+        yield markdown_reply(event, text)
 
     @filter.command("vt_live")
     async def vt_live(self, event: AstrMessageEvent, uid: str = ""):
@@ -564,7 +611,7 @@ class MyPlugin(Star):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
         # 输出按 markdown 组织：QQ 官方机器人会渲染成带样式的卡片，其余平台读起来也是普通文本。
-        lines = ["## VTuber Monitor 0.7.43", ""]
+        lines = ["## VTuber Monitor 0.7.45", ""]
         if listener is None:
             lines.append("**直播监听**：未启用")
         else:

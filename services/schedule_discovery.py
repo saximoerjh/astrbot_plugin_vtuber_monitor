@@ -31,6 +31,10 @@ class ScheduleDiscovery:
     def is_candidate(self, post):
         return bool(post.images) and (post.is_pinned or any(k in post.text.casefold() for k in self.keywords))
 
+    @property
+    def scanning(self):
+        return self._lock.locked()
+
     async def scan(self, uid, posts=None, force=False, week_start=""):
         uid = validate_uid(uid)
         override = parse_week_override(week_start)

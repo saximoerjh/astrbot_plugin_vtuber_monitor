@@ -80,7 +80,7 @@ def format_diff(changes):
         if s.get('original_end_time'):
             original += '–' + s['original_end_time']
         return f"{s['date']} {s['start_time'] or '时间待定'} {s['title']}（原定 {original}） [{STATUS_LABELS.get(s['status'], s['status'])}]"
-    return "\n".join(f"{'/'.join(labels[k] for k in c['kinds'])}：{describe(c['before'])} → {describe(c['after'])}"
+    return "\n".join(f"- {'/'.join(labels[k] for k in c['kinds'])}：{describe(c['before'])} → {describe(c['after'])}"
                      for c in changes[:20]) + ("\n（仅展示前 20 项）" if len(changes) > 20 else "")
 
 

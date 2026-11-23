@@ -92,7 +92,8 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         assert [x async for x in plugin.vt_list(event)] == ["当前会话暂无订阅。"]
         plugin.schedules = AsyncMock()
         plugin.schedules.get_schedule_history.return_value = [{"week_start": "2026-09-21", "versions": 1}]
-        assert "2026-09-21" in ([x async for x in plugin.vt_schedule_history(event, "456")])[0]
+        history = ([x async for x in plugin.vt_schedule_history(event, "456")])[0]
+        assert "2026-09-21" in history and history.markdown is True
         plugin.schedules.get_weekly_schedule.return_value = {
             "week_start": "2026-09-21", "revision": 1,
             "streams": [{"date": "2026-09-24", "start_time": None, "title": "待定联动", "status": "unknown"}]}
@@ -102,7 +103,7 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         for label in ("本周", "这周", "上周", "下周", "本星期", "上星期", "下星期"):
             results = [x async for x in plugin.vt_schedule(event, "456", label)]
             plugin.schedules.get_weekly_schedule.assert_awaited_with(456, parse_week_override(label).isoformat())
-            assert "周表起始日" in results[0]
+            assert results[0].startswith("## 周表 · 2026-09-21") and results[0].markdown is True
         plugin.schedules.get_weekly_schedule.reset_mock()
         assert "周次" in ([x async for x in plugin.vt_schedule(event, "456", "随便")])[0]
         plugin.schedules.get_weekly_schedule.assert_not_awaited()
@@ -117,7 +118,7 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
             expected = parse_week_override(label).isoformat()
             results = [x async for x in plugin.vt_parse_schedule(event, "456", label)]
             plugin.discovery.scan.assert_awaited_with(456, force=True, week_start=expected)
-            assert f"指定周次：{expected}" in results[0]
+            assert f"**指定周次**：{expected}" in results[0] and results[0].markdown is True
         service.subscribe.side_effect = ValueError("bad uid")
         assert "未找到" in ([x async for x in plugin.vt_sub(event, "bad")])[0]
         from astrbot_plugin_vtuber_monitor.core.models import VtuberState
@@ -161,8 +162,41 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         # 渲染失败不能让查询失败，必须回退到纯文字。
         plugin.schedule_renderer.render.side_effect = RuntimeError("browser down")
         fallback = [x async for x in plugin.vt_schedule(event, "小路", "2026-09-21")]
-        assert "周表起始日" in fallback[0] and "实际直播：" in fallback[0]
+        assert fallback[0].startswith("## 周表 · 2026-09-21") and "实际直播：" in fallback[0]
+        assert fallback[0].markdown is True
         plugin.config["schedule_image_enabled"] = False
+        # 缓存为空且本会话特别关注时：先提示一句，再顺手解析一次，然后展示新周表。
+        from astrbot_plugin_vtuber_monitor.core.schedule_models import china_today
+        this_monday = china_today().isoformat()
+        plugin.discovery.parser.provider_id = "provider"
+        plugin.discovery.scan = AsyncMock(return_value=[])
+        plugin.schedules.get_weekly_schedule.side_effect = [
+            None,
+            {"week_start": this_monday, "revision": 0,
+             "streams": [{"date": this_monday, "start_time": "21:00", "title": "突击", "status": "scheduled"}]}]
+        await plugin.targets.data.add_subscription(VtuberState(789, "特别主播"), event.unified_msg_origin,
+                                                  "special", user_id="user1")
+        results = [x async for x in plugin.vt_schedule(event, "789")]
+        assert results[0].startswith("本周周表尚未解析") and len(results) == 2
+        assert "突击" in results[1]
+        plugin.discovery.scan.assert_awaited_once_with(789)
+        # 空白占位容器（还没排期）也算未解析，同样补一次。
+        plugin.discovery.scan.reset_mock()
+        plugin.schedules.get_weekly_schedule.side_effect = [
+            {"week_start": this_monday, "revision": 0, "streams": [], "source_dynamic_id": ""},
+            {"week_start": this_monday, "revision": 0,
+             "streams": [{"date": this_monday, "start_time": "21:00", "title": "突击", "status": "scheduled"}]}]
+        results = [x async for x in plugin.vt_schedule(event, "789")]
+        assert results[0].startswith("本周周表尚未解析")
+        plugin.discovery.scan.assert_awaited_once_with(789)
+        # 普通关注不触发；指定非本周也不触发。
+        plugin.discovery.scan.reset_mock()
+        plugin.schedules.get_weekly_schedule.side_effect = [None]
+        assert "未找到本周周表" in ([x async for x in plugin.vt_schedule(event, "456")])[0]
+        plugin.schedules.get_weekly_schedule.side_effect = [None]
+        assert "未找到 2026-09-21 起始的周表" in ([x async for x in plugin.vt_schedule(event, "789", "2026-09-21")])[0]
+        plugin.discovery.scan.assert_not_awaited()
+        plugin.discovery.parser.provider_id = ""
         plugin.pinned.build = AsyncMock(return_value=["screenshot", "image1", "original text"])
         monkeypatch.setattr(main, "forward_chain", lambda parts, sender: ["forward", parts, sender])
         monkeypatch.setattr(main, "message_parts", lambda parts: [[part] for part in parts])
