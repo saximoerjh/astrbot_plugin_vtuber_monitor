@@ -1,4 +1,4 @@
-"""从 docs/monitor.png 裁出头像，生成 README 和 AstrBot WebUI 共用的 logo.png。
+"""从 docs/monitor.png 裁出头像，生成 README 头图和 AstrBot WebUI 图标。
 
 用法：python tools/make_logo.py [输出路径]
 """
@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 SOURCE = PLUGIN_DIR / "docs" / "monitor.png"
+DEFAULT_TARGETS = (PLUGIN_DIR / "logo.png", PLUGIN_DIR / "docs" / "monitor-avatar.png")
 # 围绕面部取正方形，保留发顶和兔子，裁去原图上方大片留白。
 CROP_BOX = (480, 1350, 1648, 2518)
 OUTPUT = 256
@@ -32,8 +33,8 @@ def build():
 
 
 if __name__ == "__main__":
-    target = (
-        Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else PLUGIN_DIR / "logo.png"
-    )
-    build().save(target, format="PNG", optimize=True)
-    print(f"{target} {target.stat().st_size // 1024}KiB")
+    targets = (Path(sys.argv[1]).resolve(),) if len(sys.argv) > 1 else DEFAULT_TARGETS
+    avatar = build()
+    for target in targets:
+        avatar.save(target, format="PNG", optimize=True)
+        print(f"{target} {target.stat().st_size // 1024}KiB")

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="152" height="152" alt="VTuber 直播与周表助手头像">
+  <img src="docs/monitor-avatar.png" width="152" height="152" alt="VTuber 直播与周表助手头像">
 </p>
 
 <h1 align="center">astrbot_plugin_vtuber_monitor</h1>
@@ -193,7 +193,7 @@ python tests/dynamic_preview.py --variants
 
 扫码凭据保存在本机数据库中。Git 忽略运行期目录、数据库及事务文件、本机配置和登录二维码目录。
 
-仓库根目录的 `logo.png`（256×256）用于 README 头图和 AstrBot WebUI 插件卡片。它取自 `docs/monitor.png` 的头像部分。要调整裁切范围，修改 `tools/make_logo.py` 的 `CROP_BOX` 后运行 `python tools/make_logo.py`。
+README 使用 `docs/monitor-avatar.png`，AstrBot WebUI 插件卡片读取仓库根目录的 `logo.png`。两张图都是从 `docs/monitor.png` 裁出的 256×256 头像。要调整裁切范围，修改 `tools/make_logo.py` 的 `CROP_BOX` 后运行 `python tools/make_logo.py`，同时生成两张图。
 
 ## 📄 许可
 
