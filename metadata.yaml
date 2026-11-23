@@ -9,16 +9,29 @@ tags:
   - B站直播
   - VTuber
   - vtb
+  - vup
+  - 管人
+  - gr
   - 虚拟主播
   - VirtuaReal
   - VituaReal
   - vr
   - 直播监控
+  - 监控
+  - 管人监控
   - 直播订阅
+  - 直播通知
+  - 上下播通知
+  - 开播通知
+  - 下播通知
   - 开播提醒
   - 直播周表
+  - 直播排期
+  - 周表解析
+  - 周表更新
+  - 直播统计
   - 自动调播
-version: 1.0.3
+version: 1.0.4
 astrbot_version: ">=4.26,<5"
 author: hibiscus
 repo: https://github.com/saximoerjh/astrbot_plugin_vtuber_monitor
