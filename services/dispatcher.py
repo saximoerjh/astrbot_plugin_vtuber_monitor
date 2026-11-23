@@ -5,7 +5,7 @@ import math
 
 from astrbot.api import logger
 
-from ..core.models import FollowLevel, validate_umo
+from ..core.models import FollowLevel, utc_now, validate_umo
 
 
 def make_message(text):
@@ -43,7 +43,7 @@ class Dispatcher:
     def __init__(self, context, *, normal_start=True, normal_end=True,
                  special_start=True, special_end=False, send_timeout=15,
                  message_factory=make_message, live_message_factory=make_live_message,
-                 image_message_factory=make_image_message, flags_provider=None):
+                 image_message_factory=make_image_message, flags_provider=None, notice_image=None):
         if not math.isfinite(send_timeout) or send_timeout <= 0:
             raise ValueError("消息发送超时必须是正数。")
         self.context = context
@@ -53,6 +53,7 @@ class Dispatcher:
         self.special_end = special_end
         # 传入后每次发送都重读一遍开关，改完配置不用重载插件也能立刻生效。
         self.flags_provider = flags_provider
+        self.notice_image = notice_image
         self.send_timeout = send_timeout
         self.message_factory = message_factory
         self.live_message_factory = live_message_factory
@@ -60,6 +61,9 @@ class Dispatcher:
         self.sent = 0
         self.failed = 0
         self._schedule_lock = asyncio.Lock()
+        self._image_lock = asyncio.Lock()
+        self.last_success_at = None
+        self.last_error = ""
         self.schedule_enabled = False
         self.adjustment_enabled = False
 
@@ -79,30 +83,93 @@ class Dispatcher:
                 flags[name] = bool(value)
         return flags
 
-    async def push_schedule_updated(self, umo, text):
-        return await self._send(umo, text)
-
-    async def push_schedule_adjusted(self, umo, text, image_path=""):
-        """调播通知分两条发送：先动态原图（可能多张），再文字结果。"""
-        for path in notice_paths(image_path):
-            await self._send_local_image(umo, path)
-        return await self._send(umo, text)
-
-    async def flush_schedule_notifications(self, data):
+    async def flush_schedule_notifications(self, data, *, concurrency=1):
         async with self._schedule_lock:
+            groups = {}
             for job in await data.pending_notifications():
-                enabled = self.schedule_enabled if job["kind"] == "schedule_updated" else self.adjustment_enabled
-                subscription = await data.get_subscription(job["uid"], job["umo"])
-                if not enabled or subscription is None or subscription.level != FollowLevel.SPECIAL:
-                    # 直接丢弃，这样以后重新订阅也不会发出过期通知。
-                    await data.finish_notification(job["id"], True)
-                    continue
-                if job["kind"] == "schedule_updated":
-                    delivered = await self.push_schedule_updated(job["umo"], job["message"])
+                groups.setdefault(job["umo"], []).append(job)
+            if not groups:
+                return
+            flags = await self.notification_flags()
+            limit = asyncio.Semaphore(concurrency)
+
+            async def deliver_group(jobs):
+                async with limit:
+                    for job in jobs:
+                        try:
+                            if not await self._deliver_job(data, job, flags):
+                                break
+                        except Exception as exc:
+                            self.last_error = f"通知任务处理失败（{type(exc).__name__}）"
+                            logger.warning("Notification processing failed job=%s type=%s", job["id"], type(exc).__name__)
+                            break
+
+            await asyncio.gather(*(deliver_group(group) for group in groups.values()))
+
+    async def run(self, data, *, interval=5):
+        while True:
+            try:
+                await self.flush_schedule_notifications(data, concurrency=4)
+            except Exception as exc:
+                self.last_error = f"通知队列读取失败（{type(exc).__name__}）"
+                logger.warning("Notification queue read failed type=%s", type(exc).__name__)
+            await asyncio.sleep(interval)
+
+    async def _deliver_job(self, data, job, flags):
+        kind = job["kind"]
+        subscription = await data.get_subscription(job["uid"], job["umo"])
+        enabled = False
+        if subscription is not None and (not job["created_at"] or subscription.created_at <= job["created_at"]):
+            special = subscription.level == FollowLevel.SPECIAL
+            if kind in ("live_start", "live_end"):
+                level = "special" if special else "normal"
+                enabled = flags[f"{level}_{kind.removeprefix('live_')}"]
+            elif special:
+                enabled = {"schedule_updated": self.schedule_enabled,
+                           "schedule_adjusted": self.adjustment_enabled}.get(kind, False)
+        if not enabled:
+            await data.skip_notification(job["id"])
+            return True
+
+        if kind == "schedule_adjusted":
+            job = await self._prepare_images(data, job)
+            paths = notice_paths(job["image_path"])
+            attempts = job["attempts"]
+            for index in range(job["next_part"], len(paths)):
+                if not await self._send_local_image(job["umo"], paths[index]):
+                    if attempts < 4:
+                        await data.finish_notification(job["id"], False, error="附件发送失败，等待重试")
+                        return False
+                    await data.advance_notification(job["id"], index + 1, "附件发送失败，已发送可用部分")
                 else:
-                    delivered = await self.push_schedule_adjusted(
-                        job["umo"], job["message"], job.get("image_path", ""))
-                await data.finish_notification(job["id"], delivered)
+                    await data.advance_notification(job["id"], index + 1)
+                attempts = 0
+
+        cover = job["image_path"] if kind == "live_start" else ""
+        delivered = await self._send(job["umo"], job["message"], cover)
+        if not delivered and cover:
+            delivered = await self._send(job["umo"], job["message"])
+        await data.finish_notification(job["id"], delivered, error="" if delivered else "平台发送失败或超时")
+        if delivered:
+            self.last_success_at = utc_now()
+        return delivered
+
+    async def _prepare_images(self, data, job):
+        if not job["source_id"]:
+            return job
+        async with self._image_lock:
+            job = await data.get_notification(job["id"])
+            if not job["source_id"]:
+                return job
+            source_id = job["source_id"]
+            error = ""
+            try:
+                paths = notice_paths(await self.notice_image(job["uid"], source_id)) if self.notice_image else []
+            except Exception as exc:
+                paths, error = [], "附件生成失败，已发送可用部分"
+                logger.warning("Notification attachment unavailable uid=%s type=%s", job["uid"], type(exc).__name__)
+            await data.set_notification_images(job["uid"], source_id, paths, error)
+            return await data.get_notification(job["id"])
 
     async def _send_local_image(self, umo, path):
         """发送本地截图；失败只记录，不算整条通知失败。"""
@@ -134,13 +201,18 @@ class Dispatcher:
         self.sent += 1
         return True
 
-    async def _push(self, state, subscriptions, started):
+    @staticmethod
+    def live_message(state, started):
         action = "开播了" if started else "下播了"
         text = f"{state.name}（UID {state.uid}）{action}。"
         if started and state.live_title:
             text += f"\n直播标题：{state.live_title}"
         if state.room_id:
             text += f"\nhttps://live.bilibili.com/{state.room_id}"
+        return text, state.live_cover if started else ""
+
+    async def _push(self, state, subscriptions, started):
+        text, cover = self.live_message(state, started)
         flags = await self.notification_flags()
         destinations = {
             s.umo for s in subscriptions if s.uid == state.uid and (
@@ -149,7 +221,6 @@ class Dispatcher:
                 else (flags["normal_start"] if started else flags["normal_end"]))
         }
         for umo in sorted(destinations):
-            cover = state.live_cover if started else ""
             if not await self._send(umo, text, cover) and cover:
                 # 平台拒收图片时，仍可退回发送直播链接与标题。
                 await self._send(umo, text)

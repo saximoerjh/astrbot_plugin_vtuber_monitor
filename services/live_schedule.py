@@ -9,6 +9,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from weakref import WeakValueDictionary
 
 from astrbot.api import logger
 
@@ -61,11 +62,17 @@ class LiveScheduleRecorder:
         self.min_live_duration = min_live_duration
         # 可选：本周还没有周表时建一张空白容器的回调（由 ScheduleService 提供）。
         self.placeholder = placeholder
-        self._lock = asyncio.Lock()
+        self._locks = WeakValueDictionary()
+
+    def _lock_for(self, uid):
+        lock = self._locks.get(uid)
+        if lock is None:
+            lock = self._locks[uid] = asyncio.Lock()
+        return lock
 
     async def sync(self, uid, *, now=None):
         """轮询入口：先退役无法落位的记录，再处理待落位的场次，最后判未兑现。"""
-        async with self._lock:
+        async with self._lock_for(uid):
             await self._retire_unknown_starts(uid)
             weeks = set(await self._pending_weeks(uid)) | await self._invalidate_short_sessions(uid)
             for week in sorted(weeks):
@@ -74,7 +81,7 @@ class LiveScheduleRecorder:
 
     async def reconcile_week(self, uid, week_start):
         """导入入口：为刚刚保存的周表补记此前观测到的场次。"""
-        async with self._lock:
+        async with self._lock_for(uid):
             await self._retire_unknown_starts(uid)
             await self._place_week(uid, week_start)
 
@@ -337,8 +344,7 @@ class LiveScheduleRecorder:
             if self.placeholder is None:
                 # 没有可挂靠的位置，记录保持待落位，并在 /vt_status 与 /vt_schedule 中可见。
                 return
-            if not await self.placeholder(uid, week_start):
-                return
+            await self.placeholder(uid, week_start)
             schedule = await self.data.get_historical_schedule(uid, week_start)
             if schedule is None:
                 return

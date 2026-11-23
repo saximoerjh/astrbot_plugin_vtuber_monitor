@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 from astrbot.api import logger
+from ..core.data_manager import ScheduleConflict
 
 from ..core.schedule_models import validate_schedule, china_today, WeeklySchedule, StreamPlan
 from ..core.models import validate_uid, utc_now
@@ -34,16 +35,13 @@ def _info_updates(args):
 
 
 class ScheduleService:
-    def __init__(self, data, *, schedule_push=False, adjustment_push=False, reconciler=None,
-                 notice_image=None):
+    def __init__(self, data, *, schedule_push=False, adjustment_push=False, reconcile_week=None):
         self.data = data
         self.schedule_push = schedule_push
         self.adjustment_push = adjustment_push
         # 可选的直播落位器：刚保存的周表会回填
         # 在该周周表发布之前发生的观测。
-        self.reconciler = reconciler
-        # 可选：为调播通知提供触发它的动态截图，返回本地路径。
-        self.notice_image = notice_image
+        self.reconcile_week = reconcile_week
 
     async def replace_weekly_schedule(self, schedule, *, import_key=""):
         validate_schedule(schedule)
@@ -78,9 +76,9 @@ class ScheduleService:
         saved = await self.data.save_weekly_schedule(content, expected=old, source_id=schedule.source_dynamic_id,
                                               reason="weekly_image_replacement", fingerprint=fingerprint,
                                               notification=notification)
-        if saved and self.reconciler is not None:
+        if saved and self.reconcile_week is not None:
             try:
-                await self.reconciler.reconcile_week(schedule.uid, schedule.week_start)
+                await self.reconcile_week(schedule.uid, schedule.week_start)
             except Exception:
                 # 周表已经存好了，回填失败不能让导入命令失败。
                 logger.warning("Live schedule backfill failed uid=%s week=%s",
@@ -105,19 +103,8 @@ class ScheduleService:
         解析失败后把已有周表清空，而这里创建的是一张本来就不存在任何排期的容器。
         真正的周表到了以后会照常导入，并把之前落在这里的直播按新周表重新匹配。
         """
-        uid = validate_uid(uid)
-        if week_start:
-            week = date.fromisoformat(week_start).isoformat()
-        else:
-            today = china_today()
-            week = (today - timedelta(days=today.weekday())).isoformat()
-        if await self.data.get_historical_schedule(uid, week) is not None:
-            return False
-        return await self.data.save_weekly_schedule(
-            {"uid": uid, "week_start": week, "streams": [], "source_dynamic_id": "",
-             "source_image_url": "", "local_image_path": "", "parsed_at": "",
-             "updated_at": utc_now(), "revision": 0},
-            expected=None, source_id="", reason="placeholder")
+        week = date.fromisoformat(week_start).isoformat() if week_start else ""
+        return await self.data.ensure_schedule_placeholder(uid, week)
 
     async def apply_operations(self, uid, operations, *, source_dynamic_id="", operation_id="",
                                expected=None, dry_run=False, source_text=""):
@@ -130,7 +117,7 @@ class ScheduleService:
         if not old:
             raise ValueError("尚无本周周表，不能进行调播；可先解析周表。")
         if expected is not None and old != expected:
-            raise ValueError("模型分析期间周表发生变化，请重试。")
+            raise ScheduleConflict("模型分析期间周表发生变化，请重试。")
         if not isinstance(operations, list) or not 1 <= len(operations) <= 10:
             raise ValueError("调播操作数量须为 1–10。")
         plans = [StreamPlan(**p) for p in old["streams"]]
@@ -199,22 +186,8 @@ class ScheduleService:
         content["revision"] = old.get("revision", 0) + 1
         notification = None
         if self.adjustment_push:
-            # 附上触发调播的那条动态：优先它的原图（多张就都发），取不到再退回整页截图。
-            image_path = ""
-            if self.notice_image is not None and source_dynamic_id and not dry_run:
-                try:
-                    shots = await self.notice_image(uid, source_dynamic_id) or []
-                except Exception:
-                    logger.warning("Adjustment notice screenshot failed uid=%s", uid)
-                    shots = []
-                if isinstance(shots, str):
-                    shots = [shots] if shots else []
-                paths = [str(path) for path in shots if path]
-                image_path = (json.dumps(paths, ensure_ascii=False) if len(paths) > 1
-                              else (paths[0] if paths else ""))
             notification = ("schedule_adjusted",
-                            format_adjustment_notice(uid, changes, reason, source_text=source_text),
-                            image_path)
+                            format_adjustment_notice(uid, changes, reason, source_text=source_text))
         success = dry_run or await self.data.save_weekly_schedule(
             content, expected=old, source_id=source_dynamic_id, reason=reason,
             operation_id=operation_id, notification=notification)

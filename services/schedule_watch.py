@@ -11,7 +11,8 @@ from datetime import date, datetime, time, timedelta, timezone
 
 from astrbot.api import logger
 
-from ..core.schedule_models import StreamPlan, WeeklySchedule, china_today
+from ..bili_client import BiliError, BiliRateLimited
+from ..core.schedule_models import StreamPlan, WeeklySchedule, china_today, explicit_week_hint
 from .schedule_parser import ScheduleParseError
 
 CHINA = timezone(timedelta(hours=8))
@@ -63,28 +64,29 @@ def snapshot(raw, text):
                        r"[零〇一二三四五六七八九十廿\d]+[年月日号]|本周|上周|下周|这周", text)
     return hashlib.sha256(raw + "\n".join(dates).encode()).hexdigest()
 
+async def remember_schedule(data, post, schedule, raw):
+    old = await data.get_schedule_tracking(post.uid)
+    state = old or {}
+    state.setdefault("anchor_week", schedule.week_start)
+    state.setdefault("observations", [])
+    state.update(week=schedule.week_start, dynamic_id=post.id,
+                 image_url=schedule.source_image_url, fingerprint=snapshot(raw, post.text),
+                 schedule=schedule.to_dict(), checked_slot="", pending=None, error="")
+    await data.save_schedule_tracking(post.uid, state)
+
 
 class ScheduleWatch:
-    def __init__(self, discovery, *, scan_times=DEFAULT_SCAN_TIMES, recent_posts=RECENT_POSTS,
-                 auto_parse_normal=False):
-        self.discovery = discovery
-        self.data = discovery.data
+    def __init__(self, data, bili, parser, schedules, *, bootstrap, is_candidate, lock_for,
+                 scan_times=DEFAULT_SCAN_TIMES, recent_posts=RECENT_POSTS, auto_parse_normal=False):
+        self.data, self.bili, self.parser, self.schedules = data, bili, parser, schedules
+        self.bootstrap, self.is_candidate, self.lock_for = bootstrap, is_candidate, lock_for
         self.scan_times = parse_scan_times(scan_times)
         self.recent_posts = max(1, int(recent_posts))
         self.auto_parse_normal = bool(auto_parse_normal)
 
-    async def remember(self, post, schedule, raw):
-        """记录/更新定时检查的基准；解析成功后由发现流程调用。"""
-        old = await self.data.get_schedule_tracking(post.uid)
-        state = old or {"anchor_week": schedule.week_start, "observations": []}
-        state.update(week=schedule.week_start, dynamic_id=post.id,
-                     image_url=schedule.source_image_url, fingerprint=snapshot(raw, post.text),
-                     schedule=schedule.to_dict(), checked_slot="", pending=None, error="")
-        await self.data.save_schedule_tracking(post.uid, state)
-
     def select_posts(self, posts):
         """范围：置顶动态 + 最近几条候选动态，最多 recent_posts 条。"""
-        candidates = [post for post in posts if self.discovery.is_candidate(post)]
+        candidates = [post for post in posts if self.is_candidate(post)]
         pinned = [post for post in candidates if post.is_pinned]
         others = sorted((post for post in candidates if not post.is_pinned),
                         key=lambda post: int(post.id), reverse=True)
@@ -112,27 +114,60 @@ class ScheduleWatch:
     async def check(self, uid, *, now=None, special=False):
         """到点后扫描一次；同一时间点只处理一次。"""
         now = now or datetime.now(CHINA)
-        state = await self.data.get_schedule_tracking(uid)
-        if state is None:
-            # 还没有基准：特别关注（或开了普通关注自动解析）先扫一页建立基准。
-            if special or self.auto_parse_normal:
-                await self.discovery.scan(uid)
-            return
         slot = latest_due_slot(now, self.scan_times)
-        if slot is None or state.get("checked_slot") == slot:
-            return
-        async with self.discovery._lock:
+        if slot is None:
+            return False
+        state = await self.data.get_schedule_tracking(uid) or {}
+        if state.get("checked_slot") == slot:
+            return False
+        if state.get("retry_slot") == slot and now.timestamp() < state.get("retry_at", 0):
+            return True
+        if not state.get("week"):
+            if not (special or self.auto_parse_normal):
+                return False
+            try:
+                results = await self.bootstrap(uid)
+                if (isinstance(results, list) and any(row["status"] == "failed" for row in results)
+                        and not any(row["status"] in ("parsed", "archived", "unchanged") for row in results)):
+                    state = await self.data.get_schedule_tracking(uid) or state
+                    return await self._retry(uid, state, slot, now, "初次周表扫描遇到图片或识别错误")
+            except Exception as exc:
+                return await self._retry(uid, state, slot, now, self._error_text(exc), exc)
+            state = await self.data.get_schedule_tracking(uid) or state
+            state["checked_slot"] = slot
+            await self.data.save_schedule_tracking(uid, state)
+            return False
+        async with self.lock_for(uid):
             state = await self.data.get_schedule_tracking(uid)
             if state is None or state.get("checked_slot") == slot:
-                return
+                return False
             try:
                 await self._scan_once(uid, state, now, slot)
-            except Exception:
-                # 不暴露模型错误与 Cookie；保留已采用的周表和任务。
-                state.update(checked_slot=slot, error="检查或解析失败，保留原周表，下次检查重试")
-                logger.warning("Schedule scan failed uid=%s", uid)
+            except Exception as exc:
+                return await self._retry(uid, state, slot, now, self._error_text(exc), exc)
+            for key in ("retry_slot", "retry_at", "scan_attempts"):
+                state.pop(key, None)
             await self.data.save_schedule_tracking(uid, state)
-            await self.discovery.prune_images()
+            return False
+
+    @staticmethod
+    def _error_text(exc):
+        if isinstance(exc, (BiliError, ScheduleParseError)):
+            return str(exc)
+        if isinstance(exc, OSError):
+            return "周表图片读写失败，请检查数据目录"
+        return f"周表扫描失败（{type(exc).__name__}）"
+
+    async def _retry(self, uid, state, slot, now, error, exc=None):
+        attempts = state.get("scan_attempts", 0) + 1 if state.get("retry_slot") == slot else 1
+        delay = max(60 * attempts, exc.retry_after if isinstance(exc, BiliRateLimited) else 0)
+        state.update(retry_slot=slot, retry_at=now.timestamp() + delay, scan_attempts=attempts,
+                     error=f"{error}。保留原周表。")
+        if attempts >= PENDING_ATTEMPTS:
+            state["checked_slot"] = slot
+        await self.data.save_schedule_tracking(uid, state)
+        logger.warning("Schedule scan uid=%s slot=%s attempt=%s: %s", uid, slot, attempts, error)
+        return attempts < PENDING_ATTEMPTS
 
     async def _scan_once(self, uid, state, now, slot):
         today = now.date()
@@ -141,35 +176,40 @@ class ScheduleWatch:
         if state.get("pending"):
             try:
                 await self._complete(uid, state)
-            except (ScheduleParseError, ValueError):
-                dropped = await self._postpone_or_drop(uid, state)
+            except ValueError as exc:
+                dropped = await self._postpone_or_drop(uid, state, exc)
         previous = {(row["dynamic_id"], row["image_url"]): row
                     for row in await self.data.get_schedule_candidates(uid)}
         chosen = None
         unchanged = False
-        for post in self.select_posts(await self.discovery.bili.get_latest_dynamics(uid)):
+        errors = []
+        for post in self.select_posts(await self.bili.get_latest_dynamics(uid)):
             for index, url in enumerate(post.images, 1):
                 current = url == state.get("image_url")
                 if not current and self._known(previous, post, url):
                     continue
                 if not current and self._given_up(state, post, url):
                     continue
-                raw = await self.discovery.bili.download_image(url)
-                fingerprint = snapshot(raw, post.text)
-                if fingerprint == state.get("fingerprint"):
-                    # 已采用的周表图仍然存在且没变。
-                    unchanged = True
+                try:
+                    raw = await self.bili.download_image(url)
+                    fingerprint = snapshot(raw, post.text)
+                    if fingerprint == state.get("fingerprint"):
+                        unchanged = True
+                        continue
+                    if self._given_up(state, post, url, fingerprint):
+                        continue
+                    async with self.data.classification_image(raw) as path:
+                        is_schedule = await self.parser.is_schedule_image(path)
+                    if is_schedule:
+                        path = await self.data.save_schedule_image(uid, post.id, url, raw)
+                        chosen = (post, url, path, fingerprint)
+                        break
+                    await self._remember_skip(uid, post, url, index, raw)
+                except BiliRateLimited:
+                    raise
+                except (BiliError, ScheduleParseError, OSError) as exc:
+                    errors.append(exc)
                     continue
-                if self._given_up(state, post, url, fingerprint):
-                    continue
-                # 先用临时图判定；只有确实是周表才落成候选原图，
-                # 免得每个不是周表的配图都在 schedule_images/ 留下孤儿文件。
-                path = await self.data.save_classification_image(raw)
-                if await self.discovery.parser.is_schedule_image(path):
-                    path = await self.data.save_schedule_image(uid, post.id, url, raw)
-                    chosen = (post, url, path, fingerprint)
-                    break
-                await self._remember_skip(uid, post, url, index, raw)
             if chosen:
                 break
         if chosen:
@@ -183,18 +223,19 @@ class ScheduleWatch:
                 state["observations"] = observations
                 state["pending"] = {
                     "fingerprint": fingerprint, "observed_on": today.isoformat(),
-                    "target_week": (date.fromisoformat(state["week"]) + timedelta(days=7)).isoformat(),
                     "multiple": len(observations) >= 2, "count": len(observations),
                     "dynamic_id": post.id, "image_url": url, "path": path, "text": post.text,
                 }
                 await self.data.save_schedule_tracking(uid, state)
                 try:
                     await self._complete(uid, state)
-                except (ScheduleParseError, ValueError):
-                    dropped = await self._postpone_or_drop(uid, state)
-        elif unchanged:
-            state.update(pending=None, error="")
-        elif not dropped:
+                except ValueError as exc:
+                    dropped = await self._postpone_or_drop(uid, state, exc)
+        elif errors:
+            raise errors[0]
+        elif unchanged and not state.get("pending"):
+            state["error"] = ""
+        elif not dropped and not state.get("pending"):
             state["error"] = "置顶与最近动态里没有找到可确认的周表图，请手动检查"
         state["checked_slot"] = slot
 
@@ -208,7 +249,7 @@ class ScheduleWatch:
             "status": "skipped", "checked_at": datetime.now(CHINA).isoformat(timespec="seconds"),
         })
 
-    async def _postpone_or_drop(self, uid, state):
+    async def _postpone_or_drop(self, uid, state, error):
         """待确认周次的任务失败：记次数，连续失败到上限就放弃这张图。
 
         一张"确实是周表、但模型始终判不出周次"的图（例如主播把本周周表换成另一种
@@ -218,12 +259,18 @@ class ScheduleWatch:
         Returns:
             是否已经放弃这张图（True 表示本轮不再重复处理它）。
         """
+        code = getattr(error, "code", "needs_date")
+        if code in ("model_error", "model_timeout", "model_unconfigured", "schedule_conflict"):
+            raise error
+        if code == "image_missing":
+            state["pending"] = None
+            raise error
         job = dict(state.get("pending") or {})
         attempts = int(job.get("attempts", 0)) + 1
         if attempts < PENDING_ATTEMPTS:
             job["attempts"] = attempts
             state["pending"] = job
-            state["error"] = "上次更新尚不能确认周次或解析失败"
+            state["error"] = str(error) if isinstance(error, ScheduleParseError) else "上次更新尚不能确认周次或解析失败"
             return False
         state["pending"] = None
         state["error"] = "有一张新周表图无法确认周次，已跳过；需要的话用 /vt_parse_schedule 指定周次"
@@ -241,8 +288,8 @@ class ScheduleWatch:
                 "text_fingerprint": job.get("fingerprint", ""),
                 "evaluated_on": china_today().isoformat(),
                 "local_image_path": job.get("path", ""),
-                "status": "skipped", "error_code": "needs_date",
-                "error_message": "周表图无法确认周次，已跳过",
+                "status": "skipped", "error_code": code,
+                "error_message": str(error) if isinstance(error, ScheduleParseError) else "周表图无法确认周次，已跳过",
                 "checked_at": datetime.now(CHINA).isoformat(timespec="seconds"),
             })
         return True
@@ -250,23 +297,28 @@ class ScheduleWatch:
     async def _complete(self, uid, state):
         job = state["pending"]
         options = {"source_text": job["text"]}
-        if job["multiple"]:
+        observed = date.fromisoformat(job["observed_on"])
+        week = monday(observed)
+        allowed = {week.isoformat(), (week + timedelta(days=7)).isoformat()}
+        if state["week"] in allowed or state["week"] == (week - timedelta(days=7)).isoformat():
+            allowed.add(state["week"])
+        hint = explicit_week_hint(job["text"], observed)
+        if hint is not None and hint.isoformat() in allowed:
+            options["week_start"] = hint.isoformat()
+        else:
             options["update_context"] = {
                 "initial_anchor_week": state["anchor_week"], "previous_week": state["week"],
                 "observed_on": job["observed_on"], "previous_schedule": state["schedule"],
-                "updates_this_week": job["count"],
+                "updates_this_week": job["count"], "allowed_weeks": sorted(allowed),
             }
-        else:
-            options["week_start"] = job["target_week"]
         if job.get("parsed"):
             content = dict(job["parsed"])
             content["streams"] = tuple(StreamPlan(**s) for s in content["streams"])
             schedule = WeeklySchedule(**content)
         else:
-            schedule = await self.discovery.parser.parse(uid, job["path"], **options)
-        # 兜底只允许保持原周或顺延一周，绝不向前跳。
-        if schedule.week_start not in (state["week"], job["target_week"]):
-            raise ValueError("自动周次判断超出相邻周范围")
+            schedule = await self.parser.parse(uid, job["path"], **options)
+        if schedule.week_start not in allowed:
+            raise ValueError("自动识别的周次超出扫描日期允许范围")
         schedule = replace(schedule, source_dynamic_id=job["dynamic_id"],
                            source_image_url=job["image_url"], local_image_path=job["path"])
         job["parsed"] = schedule.to_dict()
@@ -277,7 +329,7 @@ class ScheduleWatch:
             raise ValueError("已有更新来源的周表，需要手动确认基准")
         # 可恢复的任务在导入前就固定了目标周；导入后崩溃只会重试
         # 这次幂等导入，而不会把锚点再往后推一周。
-        await self.discovery.schedules.store_parsed_schedule(
+        await self.schedules.store_parsed_schedule(
             schedule, import_key=f"scan:{job['observed_on']}:{job['fingerprint']}")
         state.update(week=schedule.week_start, schedule=schedule.to_dict(),
                      fingerprint=job["fingerprint"], dynamic_id=job["dynamic_id"],
@@ -287,34 +339,39 @@ class ScheduleWatch:
     async def run_once(self, now=None):
         now = now or datetime.now(CHINA)
         if latest_due_slot(now, self.scan_times) is None:
-            return
+            return False
         specials = set(await self.data.get_special_vtubers())
-        for uid in await self.data.get_subscribed_uids():
+        uids = await self.data.get_subscribed_uids()
+        limit = asyncio.Semaphore(2)
+
+        async def scan_uid(uid):
             try:
-                # 新的一周周表还没出来时，先放一张空白周表：直播才有地方落位，
-                # /vt_schedule 也能立刻看到这一周。
-                if uid in specials:
-                    await self.ensure_placeholder(uid)
-                await self.check(uid, now=now, special=uid in specials)
-            except Exception:
-                logger.warning("Unable to scan schedule uid=%s", uid)
+                async with limit:
+                    if uid in specials:
+                        await self.ensure_placeholder(uid)
+                    return await self.check(uid, now=now, special=uid in specials)
+            except Exception as exc:
+                logger.warning("Unable to scan schedule uid=%s type=%s", uid, type(exc).__name__)
+                return True
+
+        return any(await asyncio.gather(*(scan_uid(uid) for uid in uids)))
 
     async def ensure_placeholder(self, uid):
         """确保本周有周表容器；没有周表服务时静默跳过。"""
-        service = getattr(self.discovery, "schedules", None)
-        if service is None or not hasattr(service, "ensure_placeholder"):
-            return False
-        return await service.ensure_placeholder(uid)
+        return await self.schedules.ensure_placeholder(uid)
 
     async def run(self):
         while True:
+            retry = True
             try:
                 # 启动与每个时间点都跑一轮；同一时间点由 checked_slot 去重。
-                await self.run_once()
+                retry = await self.run_once()
             except Exception:
                 logger.warning("Unable to enumerate schedule subscriptions")
             target = next_scan_at(datetime.now(CHINA), self.scan_times)
             if target is None:
                 return
             delay = (target - datetime.now(CHINA)).total_seconds()
+            if retry:
+                delay = min(delay, 60)
             await asyncio.sleep(max(1, delay))

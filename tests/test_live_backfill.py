@@ -38,7 +38,7 @@ async def boot(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
     recorder = LiveScheduleRecorder(data)
-    return data, ScheduleService(data, reconciler=recorder), recorder
+    return data, ScheduleService(data, reconcile_week=recorder.reconcile_week), recorder
 
 
 def set_import_time(data, schedule, imported):

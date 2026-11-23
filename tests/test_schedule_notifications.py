@@ -79,19 +79,18 @@ async def test_adjustment_notice_sends_screenshot_then_short_text(tmp_path):
         shots.append((uid, dynamic_id))
         return await data.save_notice_image(uid, dynamic_id, b"\x89PNGshot")
 
-    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True,
-                                                   notice_image=notice_image)
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
     for umo in ("a", "b"):
         await data.add_subscription(VtuberState(1, "one"), umo, "special")
     await service.cancel_stream(1, schedule.streams[0].id, "临时取消", source_dynamic_id="101",
                                 operation_id="dynamic:101")
-    # 截图只做一次，两个会话复用同一份。
-    assert shots == [(1, "101")]
+    assert shots == []
     context = SimpleNamespace(send_message=AsyncMock(return_value=True))
     dispatcher = Dispatcher(context, message_factory=lambda text: ("text", text),
-                            image_message_factory=lambda path: ("image", path))
+                            image_message_factory=lambda path: ("image", path), notice_image=notice_image)
     dispatcher.adjustment_enabled = True
     await dispatcher.flush_schedule_notifications(data)
+    assert shots == [(1, "101")]
     assert context.send_message.await_count == 4
     first, second = context.send_message.await_args_list[0].args[1], context.send_message.await_args_list[1].args[1]
     assert first[0] == "image" and first[1].endswith(".png")
@@ -110,8 +109,7 @@ async def test_adjustment_notice_carries_dynamic_text_and_all_images(tmp_path):
         second = await data.save_notice_image(uid, f"{dynamic_id}-2", b"\x89PNGtwo")
         return [first, second]
 
-    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True,
-                                                   notice_image=notice_images)
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
     await data.add_subscription(VtuberState(1, "one"), "a", "special")
     await service.cancel_stream(1, schedule.streams[0].id, "临时取消", source_dynamic_id="101",
                                 operation_id="dynamic:101", source_text="今天有直播哦\n等小松绿做下周表")
@@ -120,7 +118,7 @@ async def test_adjustment_notice_carries_dynamic_text_and_all_images(tmp_path):
     # 多张图存成 JSON 数组，发送时先图后文，共三条。
     context = SimpleNamespace(send_message=AsyncMock(return_value=True))
     dispatcher = Dispatcher(context, message_factory=lambda text: ("text", text),
-                            image_message_factory=lambda path: ("image", path))
+                            image_message_factory=lambda path: ("image", path), notice_image=notice_images)
     dispatcher.adjustment_enabled = True
     await dispatcher.flush_schedule_notifications(data)
     sent = [call.args[1] for call in context.send_message.await_args_list]
@@ -148,14 +146,38 @@ async def test_screenshot_failure_keeps_text_notice(tmp_path):
     async def broken(uid, dynamic_id):
         raise RuntimeError("browser down")
 
-    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True,
-                                                   notice_image=broken)
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
     await data.add_subscription(VtuberState(1, "one"), "a", "special")
     await service.cancel_stream(1, schedule.streams[0].id, "取消", source_dynamic_id="101",
                                 operation_id="dynamic:101")
     jobs = await data.pending_notifications()
     assert len(jobs) == 1 and jobs[0]["image_path"] == ""
     assert "调播生效" in jobs[0]["message"]
+    dispatcher = Dispatcher(SimpleNamespace(send_message=AsyncMock(return_value=True)),
+                            message_factory=lambda text: text, notice_image=broken)
+    dispatcher.adjustment_enabled = True
+    await dispatcher.flush_schedule_notifications(data)
+    assert (await data.get_notification(jobs[0]["id"]))["state"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_attachment_retries_resume_from_last_completed_part(tmp_path):
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
+    await data.add_subscription(VtuberState(1, "one"), "a", "special")
+    await service.cancel_stream(1, schedule.streams[0].id, "取消", source_dynamic_id="101")
+    context = SimpleNamespace(send_message=AsyncMock(side_effect=[True, False, True, True]))
+    kwargs = dict(message_factory=lambda text: "text", image_message_factory=lambda path: path,
+                  notice_image=AsyncMock(return_value=["image1", "image2"]))
+    first = Dispatcher(context, **kwargs)
+    first.adjustment_enabled = True
+    await first.flush_schedule_notifications(data)
+    job = (await data.pending_notifications())[0]
+    assert (job["next_part"], job["state"]) == (1, "pending")
+    restarted = Dispatcher(context, **kwargs)
+    restarted.adjustment_enabled = True
+    await restarted.flush_schedule_notifications(data)
+    assert [call.args[1] for call in context.send_message.await_args_list] == ["image1", "image2", "image2", "text"]
+    assert (await data.get_notification(job["id"]))["state"] == "done"
 
 
 @pytest.mark.asyncio

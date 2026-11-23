@@ -25,7 +25,7 @@ from .services.login_service import LoginService
 from .services.schedule_parser import ScheduleParser
 from .services.schedule_service import ScheduleService
 from .services.schedule_discovery import ScheduleDiscovery, DEFAULT_KEYWORDS
-from .services.schedule_watch import DEFAULT_SCAN_TIMES
+from .services.schedule_watch import DEFAULT_SCAN_TIMES, ScheduleWatch
 from .services.target_service import TargetService
 from .services.pinned_screenshot import PinnedScreenshot
 from .services.pinned_service import PinnedService, forward_chain, image_then_text, message_parts
@@ -82,6 +82,11 @@ class MyPlugin(Star):
         self.profile_task = None
         self.schedule_renderer = None
         self.schedule_watch_task = None
+        self.schedule_watch = None
+        self.notification_task = None
+        self.live_reconciliation_task = None
+        self.adjustment_task = None
+        self.retention_task = None
 
     async def initialize(self):
         if self.live_listener is not None:
@@ -105,11 +110,12 @@ class MyPlugin(Star):
             special_start=self.config.get("special_live_start_push", True),
             special_end=self.config.get("special_live_end_push", False),
             flags_provider=self._notification_flags,
+            notice_image=self._adjustment_notice_image,
         )
         listener = LiveListener(data, None, self.dispatcher,
                                 float(self.config.get("live_poll_interval", 120)),
                                 float(self.config.get("live_poll_jitter", 60)),
-                                special_only=not self.config.get("enable_live_polling", False))
+                                special_only=not self.config.get("enable_live_polling", False), queued=True)
         dynamic_listener = DynamicListener(data, None,
                                           float(self.config.get("dynamic_poll_interval", 300)))
         self.dispatcher.schedule_enabled = bool(self.config.get("enable_schedule_push", False))
@@ -120,10 +126,9 @@ class MyPlugin(Star):
         await self._repair_legacy_placements(data)
         self.schedules = ScheduleService(data, schedule_push=self.dispatcher.schedule_enabled,
                                         adjustment_push=self.dispatcher.adjustment_enabled,
-                                        reconciler=self.live_recorder,
-                                        notice_image=self._adjustment_notice_image)
+                                        reconcile_week=self.live_recorder.reconcile_week)
         # 本周还没有周表时，直播轮询会先建一张空白周表当容器（见 LiveScheduleRecorder）。
-        self.live_recorder.placeholder = self.schedules.ensure_placeholder
+        self.live_recorder.placeholder = data.ensure_schedule_placeholder
         self.adjustment = AdjustmentAgent(
             self.context, self.schedules,
             self.config.get("multimodal_provider_id", ""),
@@ -131,18 +136,11 @@ class MyPlugin(Star):
         if self.config.get("auto_adjustment_with_schedule", True):
             dynamic_listener.adjustment = self.adjustment
         dynamic_listener.require_schedule = True
-        # 动态轮询只服务自动调播：只轮询已有本周周表、有模型的主播。
-        # 周表的发现与更新由 ScheduleWatch 按时间点扫描负责。
-        dynamic_listener.eligible_only = True
-        dynamic_listener.dispatcher = self.dispatcher
-        self.discovery = ScheduleDiscovery(
-            data, None, ScheduleParser(self.context, self.config.get("multimodal_provider_id", "")),
-            self.schedules, self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)),
-            scan_times=self.config.get("schedule_scan_times", list(DEFAULT_SCAN_TIMES)),
-            auto_parse_normal=bool(self.config.get("auto_parse_normal_schedule", False)))
+        # 先采集动态；周表或模型不可用时保留调播任务，等条件满足再处理。
         self.bili = BiliClient(
             timeout=float(self.config.get("request_timeout", 10)),
             max_retry=self.config.get("max_retry", 2),
+            get_cached_state=data.get_vtuber_state,
         )
         try:
             saved_credentials = await data.get_credentials()
@@ -151,11 +149,18 @@ class MyPlugin(Star):
         except Exception:
             await self.bili.close()
             raise
+        parser = ScheduleParser(self.context, self.config.get("multimodal_provider_id", ""))
+        self.discovery = ScheduleDiscovery(data, self.bili, parser, self.schedules,
+                                           self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)))
+        self.schedule_watch = ScheduleWatch(
+            data, self.bili, parser, self.schedules, bootstrap=self.discovery.scan,
+            is_candidate=self.discovery.is_candidate, lock_for=self.discovery.lock_for,
+            scan_times=self.config.get("schedule_scan_times", list(DEFAULT_SCAN_TIMES)),
+            auto_parse_normal=bool(self.config.get("auto_parse_normal_schedule", False)))
         self.login = LoginService(data, self.bili, self.dispatcher.push_login_status)
         self.profiles = ProfileService(
             data, self.bili, channel=self.config.get("screenshot_browser_channel", "auto"))
-        self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, self.discovery.parser))
-        self.discovery.bili = self.bili
+        self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, parser))
         self.subscriptions = SubscriptionService(data, self.bili, self.discovery)
         listener.bili = self.bili
         listener.schedule_recorder = self.live_recorder
@@ -190,26 +195,45 @@ class MyPlugin(Star):
                 logger.warning("Unable to repair live placements uid=%s", uid)
 
     def _start_tasks(self):
-        if self.discovery.watch.scan_times and (
+        if getattr(self, "dispatcher", None) is not None and self.notification_task is None:
+            self.notification_task = asyncio.create_task(
+                self.dispatcher.run(self.targets.data), name="vtuber-monitor-notifications")
+        if getattr(self, "targets", None) is not None and self.retention_task is None:
+            self.retention_task = asyncio.create_task(self._run_retention(), name="vtuber-monitor-retention")
+        if self.schedule_watch.scan_times and (
             self.schedule_watch_task is None or self.schedule_watch_task.done()
         ):
             self.schedule_watch_task = asyncio.create_task(
-                self.discovery.watch.run(), name="vtuber-monitor-schedule-scan")
+                self.schedule_watch.run(), name="vtuber-monitor-schedule-scan")
         if (self.config.get("enable_live_polling", False) or
                 self.config.get("auto_special_live", True)) and (
             self.live_listener_task is None or self.live_listener_task.done()
         ):
             self.live_listener_task = asyncio.create_task(
                 self.live_listener.run(), name="vtuber-monitor-live")
+            if self.live_listener.queued and self.live_reconciliation_task is None:
+                self.live_reconciliation_task = asyncio.create_task(
+                    self.live_listener.run_reconciliation(), name="vtuber-monitor-live-reconciliation")
         if self.config.get("auto_adjustment_with_schedule", True) and (
             self.dynamic_listener_task is None or self.dynamic_listener_task.done()
         ):
             self.dynamic_listener_task = asyncio.create_task(
                 self.dynamic_listener.run(), name="vtuber-monitor-dynamic")
+            if self.adjustment_task is None:
+                self.adjustment_task = asyncio.create_task(
+                    self.dynamic_listener.run_adjustments(), name="vtuber-monitor-adjustments")
         if self.profile_task is None or self.profile_task.done():
             # 头像与空间头图每天零点刷新，供周表图片使用。
             self.profile_task = asyncio.create_task(
                 self.profiles.run(), name="vtuber-monitor-profiles")
+
+    async def _run_retention(self):
+        while True:
+            try:
+                await self.targets.data.prune_schedule_images(protect_recent=True)
+            except Exception as exc:
+                logger.warning("VTuber image retention failed type=%s", type(exc).__name__)
+            await asyncio.sleep(3600)
 
     @filter.command("vt_ping")
     async def vt_ping(self, event: AstrMessageEvent):
@@ -450,7 +474,8 @@ class MyPlugin(Star):
         today = china_today()
         if week_start and week_start != (today - timedelta(days=today.weekday())).isoformat():
             return False
-        if getattr(self.discovery, "scanning", False):
+        is_scanning = getattr(self.discovery, "is_scanning", None)
+        if is_scanning(uid) if is_scanning else getattr(self.discovery, "scanning", False):
             return False
         try:
             rows = await self.targets.data.get_target_mappings(event.unified_msg_origin, event.get_sender_id())
@@ -637,14 +662,29 @@ class MyPlugin(Star):
         else:
             lines.append(
                 f"**动态监听**：{'运行中' if self.dynamic_listener_task and not self.dynamic_listener_task.done() else '未运行'}"
-                f"；完成 {self.dynamic_listener.rounds} 轮，新增 {self.dynamic_listener.received} 条，失败 {self.dynamic_listener.failures} 次")
+                f"；完成 {self.dynamic_listener.rounds} 轮，采集 {self.dynamic_listener.received} 条，失败 {self.dynamic_listener.failures} 次"
+                f"；最近成功 {local_time(self.dynamic_listener.last_success_at)}")
+            if self.dynamic_listener.last_error:
+                lines.append(f"- 最近采集错误：{self.dynamic_listener.last_error}")
         if self.discovery is None:
             lines.append("**周表扫描**：未初始化")
         else:
+            parser = self.discovery.parser
+            lookup = getattr(self.context, "get_provider_by_id", None)
+            if not parser.provider_id:
+                model_state = "未选择"
+            elif callable(lookup) and lookup(parser.provider_id) is None:
+                model_state = "配置的模型未加载"
+            elif parser.last_success_at:
+                model_state = f"{parser.provider_id}；最近有效响应 {local_time(parser.last_success_at)}"
+            else:
+                model_state = f"{parser.provider_id}；本次运行尚无有效响应"
             lines.append(
-                f"**周表扫描时间**：{'、'.join(item.strftime('%H:%M') for item in self.discovery.watch.scan_times) or '未设置（已关闭）'}"
-                f"；普通关注自动解析：{'开启' if self.discovery.watch.auto_parse_normal else '关闭'}"
-                f"；视觉模型：{'已指定' if self.discovery.parser.provider_id else '未指定'}")
+                f"**周表扫描时间**：{'、'.join(item.strftime('%H:%M') for item in self.schedule_watch.scan_times) or '未设置（已关闭）'}"
+                f"；普通关注自动解析：{'开启' if self.schedule_watch.auto_parse_normal else '关闭'}"
+                f"；视觉模型：{model_state}")
+            if parser.last_error:
+                lines.append(f"- 最近识别错误：{parser.last_error}")
         lines.append(f"**定时扫描**：{'运行中（特别关注自动解析）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}")
         lines.append(f"**空间资料**：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}")
         if self.dynamic_listener is not None and self.adjustment is not None:
@@ -654,15 +694,23 @@ class MyPlugin(Star):
         if self.dispatcher is not None:
             lines.append(
                 f"**周表推送**：{'开启' if self.dispatcher.schedule_enabled else '关闭'}"
-                f"；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}（依赖动态轮询）")
-        def queue_text(value):
-            """状态表按 state 计数，这里只报总数与失败数，别把整份字典打出来。"""
-            if not isinstance(value, dict):
-                return f"{int(value or 0)}（失败 0）"
-            return f"{sum(value.values())}（失败 {value.get('failed', 0)}）"
-
-        lines.append(f"**队列**：调播任务 {queue_text(work['adjustment_jobs'])}"
-                     f"；周表通知 {queue_text(work['schedule_outbox'])}")
+                f"；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}"
+                f"；发送任务：{'运行中' if self.notification_task and not self.notification_task.done() else '未运行'}"
+                f"；最近送达：{local_time(self.dispatcher.last_success_at)}")
+            if self.dispatcher.last_error:
+                lines.append(f"- 最近队列错误：{self.dispatcher.last_error}")
+        for name, table in (("调播任务", "adjustment_jobs"), ("通知任务", "schedule_outbox")):
+            counts = work[table]
+            oldest = work["oldest_pending"][table]
+            value = (f"待处理 {counts.get('pending', 0)}、已完成 {counts.get('done', 0)}、"
+                     f"失败 {counts.get('failed', 0)}")
+            if table == "schedule_outbox":
+                value += f"、部分送达 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
+            if counts.get("pending"):
+                value += f"；最早入队 {local_time(oldest) if oldest else '旧记录未留时间'}"
+            lines.append(f"- {name}：{value}")
+            if error := work["latest_errors"][table]:
+                lines.append(f"  最近错误：{error}")
         lines.append(
             f"**实际直播**：待落位 {work['live_sessions']['pending']} 场"
             f"；未记录 {work['live_sessions']['skipped']} 场（起点未知）"
@@ -685,7 +733,9 @@ class MyPlugin(Star):
         各自兜住异常，保证任务一定被取消。
         """
         tasks = [task for task in (self.live_listener_task, self.dynamic_listener_task,
-                                   self.schedule_watch_task, self.profile_task)
+                                   self.schedule_watch_task, self.profile_task,
+                                   self.notification_task, self.live_reconciliation_task, self.adjustment_task,
+                                   self.retention_task)
                  if task is not None]
         for task in tasks:
             task.cancel()
@@ -693,12 +743,16 @@ class MyPlugin(Star):
         self.dynamic_listener_task = None
         self.schedule_watch_task = None
         self.profile_task = None
+        self.notification_task = None
+        self.live_reconciliation_task = None
+        self.adjustment_task = None
+        self.retention_task = None
         if tasks:
             try:
                 await asyncio.gather(*tasks, return_exceptions=True)
             except Exception:
                 logger.warning("VTuber monitor background tasks did not stop cleanly")
-        for label, service in (("pinned", self.pinned), ("login", self.login)):
+        for label, service in (("subscriptions", self.subscriptions), ("pinned", self.pinned), ("login", self.login)):
             if service is None:
                 continue
             try:

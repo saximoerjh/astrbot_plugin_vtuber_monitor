@@ -24,9 +24,15 @@ def format_schedule_report(records, uid, *, target="", week_start=""):
                 if record["status"] != "failed":
                     continue
                 code = record.get("error_code")
-                reason = {"model_error": "模型调用失败", "date_conflict": "日期冲突",
+                reason = {"model_error": "模型调用失败", "model_timeout": "模型请求超时",
+                          "model_unconfigured": "未选择多模态识别模型", "image_missing": "本地图片已丢失",
+                          "download_error": record.get("error_message") or "图片下载失败", "date_conflict": "日期冲突",
                           "invalid_output": "模型结果无效", "unresolved": "未识别出有效周表"}.get(code)
-                reason = reason or ("图片下载失败" if record.get("error_stage") == "download" else "周表识别失败")
+                reason = reason or {
+                    "download": "图片下载失败", "image_save": "本地图片保存失败",
+                    "image_read": "本地图片读取失败", "store": "周表入库失败",
+                }.get(record.get("error_stage"), "周表识别失败")
+                reason = reason.rstrip("。")
                 if reason not in reasons:
                     reasons.append(reason)
             summary = "、".join(reasons[:2]) + "，未保存。"

@@ -125,7 +125,7 @@ python -m playwright install chromium
 
 上下播通知在**状态跳变时**发送一次：开播推「开播了」并附标题、封面与直播间链接，下播推「下播了」。改标题或换封面不会重复触发。
 
-周表更新通知与调播结果通知走动态轮询投递，默认关闭，可在「通知内容」里打开。**调播通知分两条发送**：先发触发这次调播的**动态原图**（动态自带配图就发它的图，最多 3 张，不依赖浏览器；纯文字动态才退回整页截图），再发文字结果（**动态原文摘要** + 每场一行改动 + 一句依据）；图片全都取不到就只发文字。多个会话复用同一份图片。
+上下播、周表更新和调播结果由独立的通知任务从数据库队列投递。周表推送与调播推送默认关闭，可在「通知内容」里开启。调播通知先发动态原图（最多 3 张）或整页截图，再发文字结果。多个会话复用附件，发送失败时从未送达的部分重试。图片取不到时仍会投递文字，部分送达情况可用 `/vt_status` 查看。
 
 ## ❓ 常见问题
 
@@ -163,7 +163,7 @@ python tests/render_preview.py --live 1512246445
 python tests/dynamic_preview.py --variants
 ```
 
-运行期数据都在 `plugin_data/astrbot_plugin_vtuber_monitor/`：`monitor.sqlite3`（订阅、周表、实际直播）、`schedule_images/`（候选周表原图，只保留最近 4 周内**被判为周表**的图加 7 天宽限期，其余每次扫描后清掉）、`classify_tmp/`（判定"是不是周表"用的临时图，每轮清空）、`notice_images/`（调播通知附带的动态原图／截图，按数量保留最近 200 张）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存，最多 40 张）、`login_qr/`。
+运行期数据目录 `plugin_data/astrbot_plugin_vtuber_monitor/` 包含 `monitor.sqlite3`（订阅、周表、实际直播、通知队列）、`schedule_images/`（周表候选原图，定期清理）、`notice_images/`（通知附件，保留待发送附件和最近 200 张）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存，最多 40 张）和 `login_qr/`。图片分类任务单独持有临时文件，读取完成后清理。
 
 仓库根目录的 `logo.png`（256×256）是 WebUI 插件卡片上的图标，AstrBot 按固定文件名读取，`metadata.yaml` 里没有对应字段；这张图由 `docs/4016_monitor.png` 裁出（脚本自动去掉四周同色留白），改 `tools/make_logo.py` 的 `SOURCE`／`RADIUS`／`PADDING` 再跑一次即可重新生成。
 

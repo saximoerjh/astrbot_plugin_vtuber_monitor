@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -71,6 +72,42 @@ async def test_invalid_credentials_not_retried_or_logged(caplog):
         assert "fake-test-secret" not in str(error.value) + caplog.text
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_catchup_pages_until_checkpoint_and_ignores_pinned_boundary():
+    calls = []
+
+    def handler(request):
+        offset = request.url.params.get("offset")
+        calls.append(offset)
+        pinned = item(2)
+        pinned["modules"]["module_tag"] = {"text": "置顶"}
+        data = ({"items": [item(15), item(14), pinned], "has_more": True, "offset": "older"}
+                if not offset else {"items": [item(13), item(12), item(10)], "has_more": True, "offset": "older-again"})
+        return httpx.Response(200, json={"code": 0, "data": data})
+
+    client = BiliClient(transport=httpx.MockTransport(handler))
+    try:
+        posts = await client.get_dynamics_since(1, "10")
+    finally:
+        await client.close()
+    assert calls == [None, "older"]
+    assert {p.id for p in posts} == {"2", "10", "12", "13", "14", "15"}
+
+
+@pytest.mark.asyncio
+async def test_late_posts_and_edits_enqueue_without_reopening_the_baseline(tmp_path):
+    data = DataManager(tmp_path)
+    await data.initialize()
+    await data.add_subscription(VtuberState(1, "one"), "group", "special", initial_dynamics=[post(10)])
+    assert [p.id for p in await data.ingest_dynamics(1, [post(15)])] == ["15"]
+    old = (await data.pending_adjustments(1))[0]
+    changed = replace(post(15), text="改到晚上八点")
+    assert [p.id for p in await data.ingest_dynamics(1, [post(8), post(12), changed])] == ["12", "15"]
+    await data.finish_adjustment(1, "15", True, payload=old["payload"])
+    assert [j["dynamic_id"] for j in await data.pending_adjustments(1)] == ["12", "15"]
+    assert not await data.ingest_dynamics(1, [changed])
 
 
 @pytest.mark.asyncio

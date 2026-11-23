@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from astrbot_plugin_vtuber_monitor.bili_client import BiliClient, BiliError, BiliRateLimited
+from astrbot_plugin_vtuber_monitor.core.models import VtuberState
 
 
 def good_body():
@@ -42,6 +43,48 @@ async def test_metadata_and_close():
     finally:
         await client.close()
     assert client.http.is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, "", " ", "当前昵称"])
+async def test_live_observation_uses_cached_name_only_when_missing(name):
+    body = good_body()
+    if name is None:
+        body["data"]["123"].pop("uname")
+    else:
+        body["data"]["123"]["uname"] = name
+    cache = AsyncMock(return_value=VtuberState(123, "已保存昵称", 789, False))
+    client = BiliClient(get_cached_state=cache, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=body)))
+    try:
+        state = await client.get_live_room_info(123)
+    finally:
+        await client.close()
+    assert state.is_live and state.room_id == 456
+    if name and name.strip():
+        assert state.name == name
+        cache.assert_not_awaited()
+    else:
+        assert state.name == "已保存昵称"
+        cache.assert_awaited_once_with(123)
+
+
+@pytest.mark.asyncio
+async def test_gif_download_uses_cdn_static_jpeg_and_validates_format():
+    jpeg = b"\xff\xd8\xfffixture"
+
+    def handler(request):
+        assert request.url.path == "/poster.gif@1600w_90q.jpg"
+        assert request.url.params["source"] == "dynamic"
+        assert "cookie" not in request.headers
+        return httpx.Response(200, headers={"Content-Type": "image/jpeg"}, content=jpeg)
+
+    client = BiliClient(transport=httpx.MockTransport(handler))
+    client.set_credentials({"SESSDATA": "fake"})
+    try:
+        assert await client.download_image("https://i0.hdslb.com/poster.gif?source=dynamic") == jpeg
+    finally:
+        await client.close()
 
 
 @pytest.mark.parametrize("failure", ["timeout", "500", "json", "missing"])

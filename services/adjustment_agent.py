@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from ..core.models import DynamicPost
 from ..core.schedule_models import china_today
 from ..tools.schedule_tools import build_toolset, execute_calls
+from .schedule_parser import ScheduleParseError
 
 DEFAULT_ADJUSTMENT_REGEX = "改到|改为|改成|延期|推迟|提前|顺延|取消|鸽|补播|加播|临时"
 
@@ -26,13 +27,13 @@ class AdjustmentAgent:
     def is_candidate(self, text):
         return isinstance(text, str) and bool(self.pattern.search(text[:12000]))
 
-    async def process(self, post, *, dry_run=False):
+    async def process(self, post, *, dry_run=False, revision=""):
         if not isinstance(post, DynamicPost) or len(post.text) > 12000:
             raise ValueError("调播动态格式或长度无效。")
         if not self.is_candidate(post.text):
             return {"success": False, "changes": [], "reason": "未命中调播候选规则"}
         if not self.provider_id:
-            raise ValueError("请配置 adjustment_provider_id，或复用 schedule_provider_id。")
+            raise ValueError("请在 VT 插件的常用设置中选择支持工具调用的多模态识别模型。")
         published = datetime.fromtimestamp(post.published_at, timezone(timedelta(hours=8)))
         today = china_today()
         monday = today - timedelta(days=today.weekday())
@@ -62,12 +63,15 @@ class AdjustmentAgent:
             response = await asyncio.wait_for(self.context.llm_generate(
                 chat_provider_id=self.provider_id, prompt=json.dumps(payload, ensure_ascii=False),
                 system_prompt=system, tools=self.tool_factory()), self.timeout)
+        except TimeoutError:
+            raise ScheduleParseError("model_timeout") from None
         except Exception:
-            raise ValueError("调播模型请求失败或超时，未修改周表。") from None
+            raise ScheduleParseError("model_error") from None
         names = getattr(response, "tools_call_name", None)
         args = getattr(response, "tools_call_args", None)
         if names == [] and args == []:
             return {"success": False, "changes": [], "reason": "模型未确认明确调播，未修改周表"}
+        operation_id = f"dynamic:{post.id}" + (f":{revision}" if revision else "")
         return await execute_calls(self.schedules, post.uid, names, args, expected=schedule,
-                                   source_dynamic_id=post.id, operation_id=f"dynamic:{post.id}",
+                                   source_dynamic_id=post.id, operation_id=operation_id,
                                    dry_run=dry_run, source_text=post.text)

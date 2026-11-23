@@ -97,6 +97,16 @@ async def test_classification_scratch_is_wiped_by_prune(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_active_classification_file_survives_pruning(tmp_path):
+    data = DataManager(tmp_path)
+    await data.initialize()
+    async with data.classification_image(b"\x89PNGscratch") as path:
+        await data.prune_schedule_images()
+        assert Path(path).read_bytes() == b"\x89PNGscratch"
+    assert not Path(path).exists()
+
+
+@pytest.mark.asyncio
 async def test_prune_rejects_negative_retention(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()

@@ -4,42 +4,46 @@ import hashlib
 from datetime import timedelta
 from pathlib import Path
 from dataclasses import replace
+from weakref import WeakValueDictionary
 
 from astrbot.api import logger
 
+from ..bili_client import BiliError
 from ..core.models import utc_now, validate_uid
 from ..core.schedule_models import china_today, explicit_week_hint, parse_week_override
 from .schedule_parser import ScheduleParseError
-from .schedule_watch import DEFAULT_SCAN_TIMES, ScheduleWatch
+from .schedule_watch import remember_schedule
 
 DEFAULT_KEYWORDS = ("周表", "本周", "schedule", "直播安排", "本周安排")
 
 
 class ScheduleDiscovery:
-    def __init__(self, data, bili, parser, schedules, keywords=DEFAULT_KEYWORDS, *,
-                 scan_times=None, auto_parse_normal=False):
+    def __init__(self, data, bili, parser, schedules, keywords=DEFAULT_KEYWORDS):
         if not isinstance(keywords, (list, tuple)) or any(not isinstance(k, str) or not k.strip() for k in keywords):
             raise ValueError("schedule_keywords 必须为非空字符串列表。")
         self.keywords = tuple(k.casefold() for k in keywords)
         self.data, self.bili, self.parser, self.schedules = data, bili, parser, schedules
-        self._lock = asyncio.Lock()
-        # 空列表是"关闭定时检查"的合法配置，不能当成未设置。
-        self.watch = ScheduleWatch(self,
-                                   scan_times=DEFAULT_SCAN_TIMES if scan_times is None else scan_times,
-                                   auto_parse_normal=auto_parse_normal)
+        self._locks = WeakValueDictionary()
+        self._scan_slots = asyncio.Semaphore(2)
 
     def is_candidate(self, post):
         return bool(post.images) and (post.is_pinned or any(k in post.text.casefold() for k in self.keywords))
 
-    @property
-    def scanning(self):
-        return self._lock.locked()
+    def lock_for(self, uid):
+        lock = self._locks.get(uid)
+        if lock is None:
+            lock = self._locks[uid] = asyncio.Lock()
+        return lock
+
+    def is_scanning(self, uid):
+        lock = self._locks.get(uid)
+        return bool(lock and lock.locked())
 
     async def scan(self, uid, posts=None, force=False, week_start=""):
         uid = validate_uid(uid)
         override = parse_week_override(week_start)
         week_start = override.isoformat() if override else ""
-        async with self._lock:
+        async with self.lock_for(uid), self._scan_slots:
             if posts is None:
                 posts = await self.bili.get_latest_dynamics(uid)
             self.data._validate_posts(uid, posts)
@@ -60,7 +64,7 @@ class ScheduleDiscovery:
                         continue
                     if (old and not force and not week_start and old.get("text_fingerprint") == fingerprint and
                         (old.get("evaluated_on") == china_today().isoformat() or
-                         old["status"] in ("parsed", "unchanged", "archived")) and
+                         old["status"] in ("parsed", "unchanged", "archived")) and old["status"] != "failed" and
                         Path(old["local_image_path"]).is_file() and
                         (old["status"] not in ("pending", "stale") or not self.parser.provider_id)):
                         results.append(old)
@@ -78,6 +82,7 @@ class ScheduleDiscovery:
                         record["error_stage"] = "download"
                         if force or not record["local_image_path"] or not Path(record["local_image_path"]).is_file():
                             raw = await self.bili.download_image(url)
+                            record["error_stage"] = "image_save"
                             record["local_image_path"] = await self.data.save_schedule_image(uid, post.id, url, raw)
                         week_hint = explicit_week_hint(post.text)
                         monday = china_today() - timedelta(days=china_today().weekday())
@@ -92,36 +97,34 @@ class ScheduleDiscovery:
                             schedule = await self.parser.parse(uid, record["local_image_path"], **options)
                             schedule = replace(schedule, source_dynamic_id=post.id,
                                                source_image_url=url, local_image_path=record["local_image_path"])
+                            record["error_stage"] = "image_read"
                             raw = await asyncio.to_thread(Path(record["local_image_path"]).read_bytes)
                             import_key = f"{post.id}:{url}:{fingerprint}:{hashlib.sha256(raw).hexdigest()}"
+                            record["error_stage"] = "store"
                             record["status"] = await self.schedules.store_parsed_schedule(schedule, import_key=import_key)
                             record["week_start"] = schedule.week_start
                             # 任何一次成功解析都更新定时检查的基准，
                             # 这样订阅时扫描、手动解析都会自动进入定时检查。
                             if not remembered:
-                                await self.watch.remember(post, schedule, raw)
+                                await remember_schedule(self.data, post, schedule, raw)
                                 remembered = True
                         record.pop("error_stage", None)
                     except ScheduleParseError as exc:
                         record["status"] = {"not_schedule": "skipped", "needs_date": "needs_date"}.get(exc.code, "failed")
                         record["error_code"] = exc.code
                         record["error_message"] = str(exc)
-                    except Exception:
-                # 不对外暴露模型提供商的错误信息，其中可能含有凭据。
+                    except BiliError as exc:
                         record["status"] = "failed"
+                        record["error_code"] = "download_error"
+                        record["error_message"] = str(exc)
+                    except Exception as exc:
+                        record["status"] = "failed"
+                        logger.warning("Schedule scan failed uid=%s dynamic=%s image=%s stage=%s type=%s",
+                                       uid, post.id, image_index, record["error_stage"], type(exc).__name__)
                     await self.data.save_schedule_candidate(record)
                     results.append(record)
                     # 一条动态只认一张通过的周表图；
                     # 其余配图不得在同一轮扫描中覆盖它。
                     if record["status"] in ("parsed", "unchanged", "archived"):
                         break
-            await self.prune_images()
             return results
-
-    async def prune_images(self):
-        """收尾清理：判定临时图与过期候选图；失败不影响扫描结果。"""
-        try:
-            return await self.data.prune_schedule_images()
-        except Exception:
-            logger.warning("Unable to prune schedule images")
-            return None

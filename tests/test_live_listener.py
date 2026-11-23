@@ -12,6 +12,38 @@ from astrbot_plugin_vtuber_monitor.services.live_listener import LiveListener
 
 
 @pytest.mark.asyncio
+async def test_queued_live_observation_recovers_notice_and_late_start(tmp_path):
+    data = DataManager(tmp_path)
+    await data.initialize()
+    await data.add_subscription(VtuberState(1, "host", 10, None), "chat", FollowLevel.SPECIAL)
+    client = AsyncMock()
+    dispatch = Dispatcher(AsyncMock(), message_factory=lambda text: text)
+    listener = LiveListener(data, client, dispatch, special_only=True, queued=True)
+    client.get_live_room_info.return_value = VtuberState(1, "host", 10, True)
+    await listener.poll_once()
+    assert (await data.live_sessions_for_uid(1))[0]["start_time"] is None
+    start = "2026-11-22T16:00:00+00:00"
+    client.get_live_room_info.return_value = VtuberState(1, "host", 10, True, live_started_at=start)
+    await listener.poll_once()
+    assert (await data.live_sessions_for_uid(1))[0]["start_time"] == start
+    client.get_live_room_info.return_value = VtuberState(1, "host", 10, False)
+    await listener.poll_once()
+    client.get_live_room_info.return_value = VtuberState(1, "host", 10, True)
+    await listener.poll_once()
+    dispatch.context.send_message.assert_not_awaited()
+    assert [j["kind"] for j in await data.pending_notifications()] == ["live_end", "live_start"]
+    reopened = DataManager(tmp_path)
+    await reopened.initialize()
+    dispatch.context.send_message.side_effect = [False, True]
+    await dispatch.flush_schedule_notifications(reopened)
+    assert [j["kind"] for j in await reopened.pending_notifications()] == ["live_start"]
+    await dispatch.flush_schedule_notifications(reopened)
+    assert not await reopened.pending_notifications()
+    states = (await reopened.get_work_status())["schedule_outbox"]
+    assert states == {"done": 1, "skipped": 1}
+
+
+@pytest.mark.asyncio
 async def test_default_special_scope_excludes_normal_destinations(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()

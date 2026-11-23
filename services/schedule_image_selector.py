@@ -29,14 +29,13 @@ class ScheduleImageSelector:
                     async with asyncio.timeout(120):
                         path = old.get("local_image_path", "")
                         if not path or not Path(path).is_file():
-        # 分类用有限尺寸的预览即可，避免下载超大立绘原图。
-                            preview = self.bili.preview_image_url(url)
-                            raw = await self.bili.download_image(preview)
-                            path = await self.data.save_classification_image(raw)
-                        known = await self.parser.is_schedule_image(path)
+                            raw = await self.bili.download_image(self.bili.preview_image_url(url))
+                        else:
+                            raw = await asyncio.to_thread(Path(path).read_bytes)
+                        async with self.data.classification_image(raw) as path:
+                            known = await self.parser.is_schedule_image(path)
                         await self.data.save_image_classification(post.uid, post.id, url, fingerprint, known)
-                except (BiliError, ScheduleParseError, TimeoutError):
-        # 未知图片绝不当作已确认周表对外发送；失败结果不缓存。
+                except (BiliError, ScheduleParseError, OSError, TimeoutError):
                     continue
             if known is True:
                 selected.append(url)

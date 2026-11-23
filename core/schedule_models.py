@@ -186,6 +186,13 @@ def explicit_week_hint(text, today=None):
     today = today or china_today()
     matches = re.findall(r"(?<![0-9])(\d{1,2})[./月](\d{1,2})日?\s*[-—~～至]\s*(\d{1,2})[./月](\d{1,2})日?", text)
     candidates = set()
+    for start_text, end_text in re.findall(r"(?<!\d)(\d{4}-\d{2}-\d{2})\s*[-—~～至]\s*(\d{4}-\d{2}-\d{2})(?!\d)", text):
+        try:
+            start, end = date.fromisoformat(start_text), date.fromisoformat(end_text)
+        except ValueError:
+            continue
+        if start.weekday() == 0 and (end - start).days == 6 and abs((start - today).days) <= 45:
+            candidates.add(start)
     for m1, d1, m2, d2 in matches:
         for year in (today.year - 1, today.year, today.year + 1):
             try:

@@ -48,7 +48,9 @@ def main():
                         assert plugin.live_listener_task is not None
                         assert plugin.live_listener.special_only
                         assert plugin.dynamic_listener_task is not None
-                        assert plugin.dynamic_listener.eligible_only
+                        assert not plugin.dynamic_listener.eligible_only
+                        assert plugin.notification_task is not None and not plugin.notification_task.done()
+                        assert plugin.live_reconciliation_task is not None
                         assert plugin.dynamic_listener.require_schedule
                         live_task, dynamic_task = plugin.live_listener_task, plugin.dynamic_listener_task
                         from astrbot.core.message.components import Plain, Image

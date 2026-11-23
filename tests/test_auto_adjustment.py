@@ -31,7 +31,8 @@ async def test_automatic_adjustment_waits_for_schedule_and_provider():
     await listener.poll_once()
     bili.get_latest_dynamics.assert_awaited_once_with(1)
     agent.process.assert_awaited_once()
-    data.finish_adjustment.assert_awaited_once_with(1, "100", True)
+    data.finish_adjustment.assert_awaited_once_with(1, "100", True,
+                                                  payload=data.pending_adjustments.return_value[0]["payload"])
     # 进入没有周表的一周后，处理会自动暂停。
     schedules.get_weekly_schedule.return_value = None
     await listener.poll_once()

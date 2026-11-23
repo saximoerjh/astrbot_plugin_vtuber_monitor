@@ -2,7 +2,8 @@
 import asyncio
 import math
 import time
-from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit, parse_qs
 from http.cookies import SimpleCookie
@@ -29,12 +30,14 @@ class BiliRateLimited(BiliError):
 
 
 class BiliClient:
-    def __init__(self, timeout: float = 10, max_retry: int = 2, *, transport=None):
+    def __init__(self, timeout: float = 10, max_retry: int = 2, *, transport=None,
+                 get_cached_state: Callable[[int], Awaitable[VtuberState | None]] | None = None):
         if not math.isfinite(timeout) or not 0 < timeout <= 120:
             raise ValueError("request_timeout 必须在 0 到 120 秒之间。")
         if type(max_retry) is not int or not 0 <= max_retry <= 5:
             raise ValueError("max_retry 必须是 0 到 5 的整数。")
         self.max_retry = max_retry
+        self._get_cached_state = get_cached_state
         self._cooldowns = {}
         self._rate_strikes = {}
         # 登录凭据只来自扫码登录（LoginService → set_credentials），没有配置项。
@@ -220,6 +223,11 @@ class BiliClient:
                 raise ValueError("unknown live status")
             if validate_uid(item["uid"]) != uid:
                 raise ValueError("uid mismatch")
+            name = item.get("uname")
+            if (name is None or isinstance(name, str) and not name.strip()) and self._get_cached_state:
+                cached = await self._get_cached_state(uid)
+                if cached is not None:
+                    name = cached.name
             title = item.get("title")
             title = title.strip()[:300] if isinstance(title, str) else ""
             cover = ""
@@ -240,7 +248,7 @@ class BiliClient:
                     started = datetime.fromtimestamp(stamp, timezone.utc).isoformat()
                 except (ValueError, OverflowError, OSError):
                     pass
-            return VtuberState(uid, item["uname"], item["room_id"], item["live_status"] == 1,
+            return VtuberState(uid, name, item["room_id"], item["live_status"] == 1,
                                live_title=title, live_cover=cover, live_started_at=started)
         except (KeyError, TypeError, ValueError):
             logger.warning("Invalid Bilibili streamer metadata uid=%s", uid)
@@ -250,11 +258,42 @@ class BiliClient:
         return await self.get_user_info(uid)
 
     async def get_latest_dynamics(self, uid: int) -> list[DynamicPost]:
+        _, posts = await self._dynamic_page(uid)
+        return posts
+
+    async def _dynamic_page(self, uid: int, offset=""):
         uid = validate_uid(uid)
+        params = {"host_mid": uid, "features": "itemOpusStyle"}
+        if offset:
+            params["offset"] = offset
         data = await self._request(uid,
             url="https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
-            params={"host_mid": uid, "features": "itemOpusStyle"})
-        return self._dynamic_posts(uid, data)
+            params=params)
+        return data, self._dynamic_posts(uid, data)
+
+    async def get_dynamics_since(self, uid, latest_id):
+        """补抓直到上次检查点；置顶帖不代表已经遍历到该位置。"""
+        if not latest_id or int(latest_id) == 0:
+            return await self.get_latest_dynamics(uid)
+        collected, offsets = {}, set()
+        offset = ""
+        # 动态编辑不改变 ID；检查点之前仍复查一页和当周动态。
+        day = datetime.now(timezone(timedelta(hours=8))).date()
+        week = datetime.combine(day - timedelta(days=day.weekday()), datetime.min.time(),
+                                tzinfo=timezone(timedelta(hours=8))).timestamp()
+        for _ in range(50):
+            data, posts = await self._dynamic_page(uid, offset)
+            for post in posts:
+                collected.setdefault(post.id, post)
+            reached = any(not post.is_pinned and int(post.id) <= int(latest_id)
+                          and post.published_at < week for post in posts)
+            if reached or not data.get("has_more"):
+                return list(collected.values())
+            offset = data.get("offset")
+            if not isinstance(offset, str) or not offset or offset in offsets:
+                raise BiliError("B 站动态分页游标异常，本轮保留原检查点。")
+            offsets.add(offset)
+        raise BiliError("待补采动态超过 50 页，本轮保留原检查点。")
 
     async def get_dynamic(self, uid, dynamic_id):
         uid = validate_uid(uid)
@@ -347,6 +386,10 @@ class BiliClient:
             not parts.hostname.endswith(".hdslb.com") or parts.username or parts.password or
             parts.port not in (None, 443)):
             raise BiliError("周表图片必须来自 Bilibili HTTPS 图片 CDN。")
+        original_path = parts.path.split("@", 1)[0]
+        if original_path.lower().endswith(".gif"):
+            # CDN 提供静态首帧，沿用下游已支持的 JPEG 格式。
+            url = parts._replace(path=original_path + "@1600w_90q.jpg").geturl()
         limit = 10 * 1024 * 1024
         for attempt in range(self.max_retry + 1):
             retry = True

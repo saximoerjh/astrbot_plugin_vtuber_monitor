@@ -4,8 +4,11 @@ import json
 import hashlib
 import os
 import sqlite3
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from .models import DynamicPost, FollowLevel, Subscription, VtuberState, utc_now, validate_uid, validate_umo
 from .schedule_models import china_today
@@ -19,6 +22,9 @@ LIVE_SESSION_INVALID = 3
 
 # 这些状态的候选图是"确实被判为周表"，属于要长期保留的那类。
 KEEP_IMAGE_STATUSES = ("parsed", "unchanged", "archived")
+
+class ScheduleConflict(ValueError):
+    code = "schedule_conflict"
 
 
 def image_suffix(content):
@@ -44,6 +50,7 @@ class DataManager:
     async def initialize(self):
         def setup():
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._run(lambda db: db.execute("PRAGMA journal_mode=WAL").fetchone())
             self._run(lambda db: db.executescript("""
                 CREATE TABLE IF NOT EXISTS vtubers (
                     uid INTEGER PRIMARY KEY, name TEXT NOT NULL,
@@ -153,6 +160,29 @@ class DataManager:
                     db.execute("DROP TABLE streamer_aliases")
                     db.execute("ALTER TABLE streamer_aliases_multi RENAME TO streamer_aliases")
                 db.execute("CREATE INDEX IF NOT EXISTS aliases_by_target ON streamer_aliases(umo, user_id, uid)")
+                db.execute("CREATE INDEX IF NOT EXISTS schedule_archive_latest ON weekly_schedule_archive(uid, week_start, id DESC)")
+                db.execute("CREATE INDEX IF NOT EXISTS schedule_archive_retention ON weekly_schedule_archive(week_start)")
+                db.execute("CREATE INDEX IF NOT EXISTS subscriptions_by_level ON subscriptions(level, uid)")
+                db.execute("CREATE INDEX IF NOT EXISTS subscriptions_by_umo ON subscriptions(umo, uid)")
+                db.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON schedule_outbox(id) WHERE state='pending'")
+                db.execute("CREATE INDEX IF NOT EXISTS adjustment_pending ON adjustment_jobs(uid, length(dynamic_id), dynamic_id) WHERE state='pending'")
+                for table, additions in {
+                    "schedule_outbox": {
+                        "created_at": "TEXT", "next_part": "INTEGER NOT NULL DEFAULT 0",
+                        "source_id": "TEXT NOT NULL DEFAULT ''", "last_error": "TEXT NOT NULL DEFAULT ''",
+                        "partial_reason": "TEXT NOT NULL DEFAULT ''",
+                    },
+                    "adjustment_jobs": {"created_at": "TEXT", "last_error": "TEXT NOT NULL DEFAULT ''"},
+                    "dynamic_checkpoints": {"floor_id": "TEXT NOT NULL DEFAULT '0'"},
+                }.items():
+                    existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+                    for key, definition in additions.items():
+                        if key not in existing:
+                            db.execute(f"ALTER TABLE {table} ADD COLUMN {key} {definition}")
+                    if table == "dynamic_checkpoints" and "floor_id" not in existing:
+                        db.execute("""UPDATE dynamic_checkpoints SET floor_id=COALESCE(
+                            (SELECT dynamic_id FROM dynamic_posts WHERE uid=dynamic_checkpoints.uid AND is_baseline
+                             ORDER BY length(dynamic_id) DESC, dynamic_id DESC LIMIT 1), '0')""")
                 from .schedule_migration import migrate_schedule_times
                 migrate_schedule_times(db)
             self._run(migrate)
@@ -205,25 +235,38 @@ class DataManager:
 
     @staticmethod
     def _save_posts(db, uid, posts, baseline=False):
-        previous = db.execute("SELECT latest_id FROM dynamic_checkpoints WHERE uid=?", (uid,)).fetchone()
+        previous = db.execute("SELECT latest_id,floor_id FROM dynamic_checkpoints WHERE uid=?", (uid,)).fetchone()
         watermark = int(previous[0]) if previous else 0
+        floor = int(previous[1]) if previous else 0
         accepted = []
         for post in sorted(posts, key=lambda p: int(p.id)):
-            if not baseline and int(post.id) <= watermark:
-                continue
             payload = json.dumps({"uid": post.uid, "id": post.id, "text": post.text,
                                   "published_at": post.published_at, "images": post.images,
                                   "is_pinned": post.is_pinned}, ensure_ascii=False)
-            inserted = db.execute("INSERT OR IGNORE INTO dynamic_posts VALUES (?, ?, ?, ?)",
-                                  (uid, post.id, payload, baseline)).rowcount
-            if inserted and not baseline:
+            existing = db.execute("SELECT payload FROM dynamic_posts WHERE uid=? AND dynamic_id=?",
+                                  (uid, post.id)).fetchone()
+            if not existing:
+                if not baseline and int(post.id) <= floor:
+                    continue
+                db.execute("INSERT INTO dynamic_posts VALUES (?, ?, ?, ?)", (uid, post.id, payload, baseline))
+            else:
+                old = json.loads(existing["payload"])
+                if not baseline and (old["text"], old["images"]) == (post.text, list(post.images)):
+                    continue
+                db.execute("UPDATE dynamic_posts SET payload=? WHERE uid=? AND dynamic_id=?", (payload, uid, post.id))
+            if not baseline:
                 accepted.append(post)
-                db.execute("INSERT OR IGNORE INTO adjustment_jobs (uid, dynamic_id, payload) VALUES (?, ?, ?)",
-                           (uid, post.id, payload))
+                if existing:
+                    revision = uuid.uuid4().hex
+                    payload = json.dumps({**json.loads(payload), "_revision": revision}, ensure_ascii=False)
+                db.execute("""INSERT INTO adjustment_jobs (uid, dynamic_id, payload, created_at) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(uid,dynamic_id) DO UPDATE SET payload=excluded.payload,
+                    created_at=excluded.created_at, attempts=0, state='pending', last_error=''""",
+                           (uid, post.id, payload, utc_now()))
         latest = str(max([watermark] + [int(p.id) for p in posts]))
-        db.execute("""INSERT INTO dynamic_checkpoints VALUES (?, ?, ?)
+        db.execute("""INSERT INTO dynamic_checkpoints (uid,latest_id,checked_at,floor_id) VALUES (?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET latest_id=excluded.latest_id, checked_at=excluded.checked_at""",
-                   (uid, latest, utc_now()))
+                   (uid, latest, utc_now(), latest if baseline else str(floor)))
         return accepted
 
     async def ingest_dynamics(self, uid, posts):
@@ -256,13 +299,14 @@ class DataManager:
             return str(path.resolve())
         return await asyncio.to_thread(write)
 
-    async def save_classification_image(self, content):
+    async def save_classification_image(self, content, *, directory=None):
         """只给"这张图是不是周表"判定用的临时图。
 
         判定用的图不是候选原图，不该进 `schedule_images/` 占位置；放进
         `classify_tmp/`，由 prune_schedule_images 每轮扫描后整目录清掉。
         """
-        path = self.path.parent / "classify_tmp" / f"{hashlib.sha256(content).hexdigest()}{image_suffix(content)}"
+        directory = directory or self.path.parent / "classify_tmp"
+        path = directory / f"{hashlib.sha256(content).hexdigest()}{image_suffix(content)}"
         def write():
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix(path.suffix + ".tmp")
@@ -271,8 +315,14 @@ class DataManager:
             return str(path.resolve())
         return await asyncio.to_thread(write)
 
+    @asynccontextmanager
+    async def classification_image(self, content):
+        """独占临时文件，保留到读取方完成。"""
+        with TemporaryDirectory(prefix="vt-classify-") as directory:
+            yield await self.save_classification_image(content, directory=Path(directory))
+
     async def prune_schedule_images(self, *, keep_weeks=4, grace_days=7, today=None,
-                                    keep_notices=200):
+                                    keep_notices=200, protect_recent=False):
         """清掉不会再被用到的候选原图，避免 `schedule_images/` 无限增长。
 
         保留三类：最近 keep_weeks 周里被判为周表的候选图（parsed/unchanged/archived）、
@@ -303,7 +353,7 @@ class DataManager:
                 name = Path(((json.loads(row["payload"]).get("pending") or {}).get("path")) or "").name
                 if name:
                     protected.add(name)
-            for row in db.execute("SELECT payload FROM weekly_schedule_archive"):
+            for row in db.execute("SELECT payload FROM weekly_schedule_archive WHERE week_start>=?", (cutoff,)):
                 payload = json.loads(row["payload"])
                 name = Path(payload.get("local_image_path") or "").name
                 if name and (payload.get("week_start") or "") >= cutoff:
@@ -323,6 +373,8 @@ class DataManager:
             if images.is_dir():
                 for path in images.iterdir():
                     if not path.is_file() or path.name in protected:
+                        continue
+                    if protect_recent and path.stat().st_mtime > datetime.now().timestamp() - 3600:
                         continue
                     freed += path.stat().st_size
                     path.unlink(missing_ok=True)
@@ -348,9 +400,19 @@ class DataManager:
                         scratch_files += 1
             notice_files = 0
             if notices.is_dir():
+                pending_names = set()
+                for row in db.execute("SELECT image_path FROM schedule_outbox WHERE state='pending' AND kind='schedule_adjusted'"):
+                    value = row[0]
+                    try:
+                        paths = json.loads(value) if value.startswith("[") else [value]
+                        pending_names.update(Path(name).name for name in paths if isinstance(name, str))
+                    except (TypeError, ValueError):
+                        continue
                 stale = sorted((path for path in notices.iterdir() if path.is_file()),
                                key=lambda path: path.stat().st_mtime, reverse=True)
                 for path in stale[keep_notices:]:
+                    if path.name in pending_names or (protect_recent and path.stat().st_mtime > datetime.now().timestamp() - 3600):
+                        continue
                     freed += path.stat().st_size
                     path.unlink(missing_ok=True)
                     notice_files += 1
@@ -453,6 +515,23 @@ class DataManager:
             (validate_uid(uid), week_start)).fetchone())
         return json.loads(row[0]) if row else None
 
+    async def ensure_schedule_placeholder(self, uid, week_start=""):
+        uid = validate_uid(uid)
+        today = china_today()
+        week = week_start or (today - timedelta(days=today.weekday())).isoformat()
+        if await self.get_historical_schedule(uid, week) is not None:
+            return False
+        try:
+            return await self.save_weekly_schedule(
+                {"uid": uid, "week_start": week, "streams": [], "source_dynamic_id": "",
+                 "source_image_url": "", "local_image_path": "", "parsed_at": "",
+                 "updated_at": utc_now(), "revision": 0},
+                expected=None, source_id="", reason="placeholder")
+        except ValueError:
+            if await self.get_historical_schedule(uid, week) is None:
+                raise
+            return False
+
     async def schedule_imported_at(self, uid, week_start):
         """这一周周表最早一次写进来的时间（= 首次导入时间）；没有记录返回 None。
 
@@ -493,7 +572,7 @@ class DataManager:
                     row = None
             old = json.loads(row[0]) if row else None
             if old != expected:
-                raise ValueError("周表已被其他任务更新，请重新读取后重试。")
+                raise ScheduleConflict("周表已被其他任务更新，请重新读取后重试。")
             if fingerprint:
                 db.execute("INSERT INTO schedule_imports VALUES (?, ?)", (uid, fingerprint))
             if operation_id:
@@ -521,11 +600,10 @@ class DataManager:
                        (uid, row[0] if row else None, payload, source_id, reason, utc_now()))
             if notification:
                 # 通知可选带一张本地图片（调播通知附触发它的动态截图）。
-                kind, message, *rest = notification
-                image_path = rest[0] if rest else ""
-                db.execute("INSERT INTO schedule_outbox (uid, umo, kind, message, image_path)"
-                           " SELECT uid, umo, ?, ?, ? FROM subscriptions WHERE uid=? AND level='special'",
-                           (kind, message, image_path, uid))
+                kind, message = notification
+                db.execute("""INSERT INTO schedule_outbox (uid, umo, kind, message, source_id, created_at)
+                    SELECT uid, umo, ?, ?, ?, ? FROM subscriptions WHERE uid=? AND level='special'""",
+                           (kind, message, source_id if kind == "schedule_adjusted" else "", utc_now(), uid))
             return True
         return await asyncio.to_thread(self._run, write)
 
@@ -547,29 +625,61 @@ class DataManager:
             "SELECT * FROM adjustment_jobs WHERE uid=? AND state='pending' ORDER BY length(dynamic_id), dynamic_id LIMIT 20",
             (validate_uid(uid),))])
 
-    async def finish_adjustment(self, uid, dynamic_id, success):
+    async def finish_adjustment(self, uid, dynamic_id, success, *, payload=None, error=""):
         await asyncio.to_thread(self._run, lambda db: db.execute(
-            "UPDATE adjustment_jobs SET attempts=attempts+1, state=CASE WHEN ? THEN 'done' WHEN attempts>=2 THEN 'failed' ELSE 'pending' END WHERE uid=? AND dynamic_id=?",
-            (success, validate_uid(uid), dynamic_id)))
+            """UPDATE adjustment_jobs SET attempts=attempts+1, last_error=?,
+               state=CASE WHEN ? THEN 'done' WHEN attempts>=2 THEN 'failed' ELSE 'pending' END
+               WHERE uid=? AND dynamic_id=? AND (? IS NULL OR payload=?)""",
+            (error, success, validate_uid(uid), dynamic_id, payload, payload)))
 
     async def retry_adjustment(self, uid, dynamic_id):
         return await asyncio.to_thread(self._run, lambda db: db.execute(
-            "UPDATE adjustment_jobs SET attempts=0, state='pending' WHERE uid=? AND dynamic_id=? AND state='failed'",
+            "UPDATE adjustment_jobs SET attempts=0, state='pending', last_error='' WHERE uid=? AND dynamic_id=? AND state='failed'",
             (validate_uid(uid), dynamic_id)).rowcount > 0)
 
     async def pending_notifications(self):
         return await asyncio.to_thread(self._run, lambda db: [dict(row) for row in db.execute(
             "SELECT * FROM schedule_outbox WHERE state='pending' ORDER BY id LIMIT 50")])
 
-    async def finish_notification(self, notification_id, success):
+    async def finish_notification(self, notification_id, success, *, error=""):
         await asyncio.to_thread(self._run, lambda db: db.execute(
-            "UPDATE schedule_outbox SET attempts=attempts+1, state=CASE WHEN ? THEN 'done' WHEN attempts>=4 THEN 'failed' ELSE 'pending' END WHERE id=?",
-            (success, notification_id)))
+            """UPDATE schedule_outbox SET attempts=attempts+1, last_error=COALESCE(NULLIF(?,''),partial_reason),
+               state=CASE WHEN ? THEN CASE WHEN partial_reason='' THEN 'done' ELSE 'partial' END
+               WHEN attempts>=4 THEN 'failed' ELSE 'pending' END WHERE id=?""",
+            (error, success, notification_id)))
+
+    async def skip_notification(self, notification_id):
+        await asyncio.to_thread(self._run, lambda db: db.execute(
+            "UPDATE schedule_outbox SET state='skipped' WHERE id=?", (notification_id,)))
+
+    async def advance_notification(self, notification_id, next_part, partial_reason=""):
+        await asyncio.to_thread(self._run, lambda db: db.execute(
+            """UPDATE schedule_outbox SET next_part=?, attempts=0,
+               partial_reason=COALESCE(NULLIF(?,''),partial_reason) WHERE id=?""",
+            (next_part, partial_reason, notification_id)))
+
+    async def get_notification(self, notification_id):
+        row = await asyncio.to_thread(self._run, lambda db: db.execute(
+            "SELECT * FROM schedule_outbox WHERE id=?", (notification_id,)).fetchone())
+        return dict(row) if row else None
+
+    async def set_notification_images(self, uid, source_id, paths, error=""):
+        value = json.dumps(paths, ensure_ascii=False) if paths else ""
+        await asyncio.to_thread(self._run, lambda db: db.execute(
+            """UPDATE schedule_outbox SET image_path=?, source_id='', partial_reason=?
+               WHERE uid=? AND source_id=? AND state='pending' AND kind='schedule_adjusted'""",
+            (value, error, uid, source_id)))
 
     async def get_work_status(self):
         def read(db):
             status = {table: {r["state"]: r["n"] for r in db.execute(
                 f"SELECT state, COUNT(*) AS n FROM {table} GROUP BY state")}
+                for table in ("adjustment_jobs", "schedule_outbox")}
+            status["oldest_pending"] = {table: db.execute(
+                f"SELECT MIN(created_at) FROM {table} WHERE state='pending'").fetchone()[0]
+                for table in ("adjustment_jobs", "schedule_outbox")}
+            status["latest_errors"] = {table: (row[0] if (row := db.execute(
+                f"SELECT last_error FROM {table} WHERE last_error<>'' ORDER BY rowid DESC LIMIT 1").fetchone()) else "")
                 for table in ("adjustment_jobs", "schedule_outbox")}
             sessions = {r["synced"]: r["n"] for r in db.execute(
                 "SELECT synced, COUNT(*) AS n FROM live_sessions GROUP BY synced")}
@@ -655,11 +765,13 @@ class DataManager:
         return await self._subscriptions("uid", validate_uid(uid))
 
     async def get_subscription(self, uid: int, umo: str) -> Subscription | None:
-        validate_umo(umo)
-        return next((s for s in await self.get_subscriptions_by_uid(uid) if s.umo == umo), None)
+        row = await asyncio.to_thread(self._run, lambda db: db.execute(
+            "SELECT * FROM subscriptions WHERE uid=? AND umo=?", (validate_uid(uid), validate_umo(umo))).fetchone())
+        return Subscription(**dict(row)) if row else None
 
     async def get_special_vtubers(self) -> list[int]:
-        return sorted({s.uid for s in await self._subscriptions("level", "special")})
+        return await asyncio.to_thread(self._run, lambda db: [row[0] for row in db.execute(
+            "SELECT DISTINCT uid FROM subscriptions WHERE level='special' ORDER BY uid")])
 
     async def get_vtuber_state(self, uid: int) -> VtuberState | None:
         row = await asyncio.to_thread(self._run, lambda db: db.execute(
@@ -674,11 +786,10 @@ class DataManager:
         return await asyncio.to_thread(self._run, lambda db: [row[0] for row in db.execute(
             "SELECT DISTINCT uid FROM subscriptions ORDER BY uid")])
 
-    async def save_vtuber_state(self, state: VtuberState) -> bool:
+    async def save_vtuber_state(self, state: VtuberState, *, notification=None) -> bool:
         """原子保存一次观测，并返回已知的直播状态是否发生了变化。
 
-        先落库再通知，重启或重复轮询都不会重发同一次状态跳变；
-        上下播通知是尽力发送，不是持久队列。
+        状态跳变与待发送通知在同一事务提交。
         """
         if not isinstance(state, VtuberState) or state.is_live is None:
             raise ValueError("直播观察必须包含有效状态。")
@@ -686,6 +797,11 @@ class DataManager:
         def write(db):
             db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT * FROM vtubers WHERE uid=?", (state.uid,)).fetchone()
+            if notification is not None:
+                subscribed = db.execute("""SELECT 1 FROM subscriptions WHERE uid=?
+                    AND (?=0 OR level='special') LIMIT 1""", (state.uid, notification[3])).fetchone()
+                if not subscribed:
+                    return False
             changed = old is not None and old["is_live"] is not None and bool(old["is_live"]) != state.is_live
             changed_at = utc_now() if changed else (old["last_live_change_at"] if old else None)
             observed = utc_now()
@@ -695,13 +811,23 @@ class DataManager:
                 basis = "api" if state.live_started_at else "observed" if changed else "unknown"
                 db.execute("INSERT INTO live_sessions(uid,start_time,observed_at,start_basis,title) VALUES (?,?,?,?,?)",
                            (state.uid, started, observed, basis, state.live_title[:300]))
+            elif state.is_live and active["start_time"] is None and state.live_started_at:
+                db.execute("UPDATE live_sessions SET start_time=?, start_basis='api', synced=0 WHERE id=?",
+                           (state.live_started_at, active["id"]))
             elif not state.is_live and active:
                 db.execute("UPDATE live_sessions SET end_time=?,synced=0 WHERE id=?", (observed, active["id"]))
             db.execute("""INSERT INTO vtubers
                 (uid, name, room_id, is_live, last_live_change_at) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(uid) DO UPDATE SET name=excluded.name, room_id=excluded.room_id,
-                is_live=excluded.is_live, last_live_change_at=excluded.last_live_change_at""",
+                is_live=excluded.is_live, last_live_change_at=excluded.last_live_change_at
+                WHERE vtubers.name IS NOT excluded.name OR vtubers.room_id IS NOT excluded.room_id
+                   OR vtubers.is_live IS NOT excluded.is_live""",
                 (state.uid, state.name, state.room_id, state.is_live, changed_at))
+            if changed and notification:
+                kind, message, cover, special_only = notification
+                db.execute("""INSERT INTO schedule_outbox (uid,umo,kind,message,image_path,created_at)
+                    SELECT uid,umo,?,?,?,? FROM subscriptions WHERE uid=? AND (?=0 OR level='special')""",
+                           (kind, message, cover, observed, state.uid, special_only))
             return changed
         return await asyncio.to_thread(self._run, write)
 
