@@ -15,7 +15,6 @@
 - **未兑现标记**：排期到点 2 小时仍未开播、且没有被动态调播的场次在图上标红并计入统计；当天之内又开播会自动撤销标记。只判**周表在该场次开播之前就已经解析到**的场次——解析之前的日子插件根本没看到这场排期，也没有观测可回补，一律不判。
 - **无效直播过滤**：短于「无效直播阈值」（默认 10 分钟）的开播不写进周表、不计入时长与迟到统计，也不参与未兑现判定，只在 `/vt_status` 里留一个计数；开播时无法预知时长，所以先正常挂上、确认太短后再撤回。
 - **置顶动态合并转发**：`/vt_pinned` 在 OneBot 上以合并转发形式发送动态完整截图与被识别为周表的图片。
-- **凌晨四点问候**：`/vt_4016` 随机挑一个正处于凌晨四点的国家和地区，交给模型造句发送。
 
 ### 界面预览
 
@@ -43,15 +42,6 @@
   <a href="docs/dongtaidiaobo.png"><img src="docs/dongtaidiaobo.png" width="720" alt="机器人引用主播动态并说明自动调播的结果和依据"></a>
 </p>
 
-<details>
-<summary>凌晨四点问候 · /vt_4016</summary>
-
-<p align="center">
-  <a href="docs/vt_4016.webp"><img src="docs/vt_4016.webp" width="520" alt="/vt_4016 回复当前正处于凌晨四点的国家"></a>
-</p>
-
-</details>
-
 ## 🚀 安装
 
 - 在 AstrBot 插件市场搜索 `astrbot_plugin_vtuber_monitor`；
@@ -73,9 +63,18 @@ python -m playwright install chromium
 - **Linux / macOS**：一般没有 Edge，`auto` 固定走 Chromium，不装浏览器就渲染不出周表图与截图。
 - **手动指定**：把「截图浏览器」设为 `chromium`、`msedge` 或 `chrome`。
 
+### 安装后快速上手
+
+先在插件设置中选择「多模态识别模型」，保存后重载插件。以灰泽满Hazel（B 站 UID `1298779265`）为例，在同一个聊天里依次发送以下命令。
+
+1. 用 `/vt_sub 1298779265` 订阅为普通关注。
+2. 用 `/vt_follow_level 1298779265 special` 改为特别关注。
+3. 用 `/vt_alias 1298779265 小满` 设置个人别名。
+4. 用 `/vt_schedule 小满` 查看本周周表。
+
 ## ⚙️ 配置
 
-**必须先选「多模态识别模型」**，否则只能缓存周表图片、无法解析周表与自动调播。该模型同时用于周表识别、调播判断和凌晨问候，需要支持图片输入（调播判断还要求工具调用能力）。留空时周表不解析、不调播，问候改用固定句式。
+在插件设置里选择「多模态识别模型」。周表识别需要模型支持图片输入，自动调播还需要工具调用能力。留空时仍会缓存周表图片，周表解析和自动调播暂停。
 
 登录 Bilibili 只有一种方式：**管理员私聊执行 `/bili_login` 扫码**，凭据由插件接口返回并保存在 `plugin_data`。没有可手动填写的凭据配置项，也不需要自己抓 Cookie。不登录也能用，只是部分接口受 Bilibili 风控限制。
 
@@ -114,7 +113,6 @@ python -m playwright install chromium
 | **vt_live** | `<UID或别名>` | 查询直播状态，不触发通知 | 所有人 |
 | **vt_latest** | `<UID或别名>` | 发两条：最新动态截图 + 动态链接，不修改检查点 | 所有人 |
 | **vt_pinned** | `<UID或别名>` | 合并转发置顶动态截图与周表图 | 所有人 |
-| **vt_4016** | (无) | 看看现在哪个国家是凌晨四点 | 所有人 |
 | **vt_status** | (无) | 查看监听状态与计数（markdown，QQ 官方机器人会渲染成卡片） | 所有人 |
 | **vt_ping** | (无) | 检查插件是否已加载 | 所有人 |
 | **bili_login** | (无) | 私聊扫码登录 Bilibili | 管理员 |
@@ -126,14 +124,7 @@ python -m playwright install chromium
 
 `special` 是**特别关注**：默认自动监听上下播、自动解析周表，并接收周表更新／调播通知。`normal` 是普通关注：默认**不被轮询**（需要打开「同时监听普通关注」才会推送上下播），周表要手动 `/vt_parse_schedule` 一次才会进入定时检查，除非打开「普通关注自动解析周表」。
 
-别名按「会话 + 用户」隔离，只影响你自己的书写习惯，不影响会话订阅。设置后所有接受 UID 的指令都能用别名：
-
-```text
-/vt_alias 1512246445 小路
-/vt_sub 1512246445 special
-/vt_schedule 小路
-/vt_pinned 小路
-```
+别名按「会话 + 用户」隔离。设置后，可以在查询周表等指令中用别名代替 UID。
 
 ### 周表是怎么来的
 
@@ -177,7 +168,7 @@ QQ 官方群会话在机器人重启后可能需要收到一条群消息来恢�
 
 ```shell
 # 单元测试（使用 uv 隔离环境，不修改 AstrBot 依赖）
-uv run --with pytest --with pytest-asyncio --with httpx --with tzdata --with 'qrcode[pil]' python -m pytest tests -q
+uv run --with pytest --with pytest-asyncio --with httpx --with 'qrcode[pil]' python -m pytest tests -q
 
 # 用 AstrBot 自带的 Python 跑真实框架生命周期冒烟
 python tests/runtime_smoke.py
@@ -192,8 +183,6 @@ python tests/dynamic_preview.py --variants
 运行期数据目录 `plugin_data/astrbot_plugin_vtuber_monitor/` 包含 `monitor.sqlite3`（订阅、周表、实际直播、通知队列）、`schedule_images/`（周表候选原图，定期清理）、`notice_images/`（通知附件，保留待发送附件和最近 200 张）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存，最多 40 张）和 `login_qr/`。图片分类任务单独持有临时文件，读取完成后清理。
 
 扫码凭据保存在本机数据库中。Git 忽略运行期目录、数据库及事务文件、本机配置和登录二维码目录。
-
-README 使用 `docs/monitor-avatar.png`，AstrBot WebUI 插件卡片读取仓库根目录的 `logo.png`。两张图都是从 `docs/monitor.png` 裁出的 256×256 头像。要调整裁切范围，修改 `tools/make_logo.py` 的 `CROP_BOX` 后运行 `python tools/make_logo.py`，同时生成两张图。
 
 ## 📄 许可
 

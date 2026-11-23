@@ -61,14 +61,13 @@ def test_grouped_custom_setting_survives_default_legacy_slot():
     assert prepare_config(config)["live_poll_interval"] == 180
 
 
-def test_three_provider_settings_merge_into_one_without_losing_the_value():
-    """历史上分开的三个模型选择合并成一个；旧值按优先级保留，只处理一次。"""
+def test_legacy_provider_settings_merge_into_one_without_losing_the_value():
+    """合并旧的周表识别和调播模型，优先保留周表识别模型。"""
     config = {
         "_grouped_config_migrated": True,
         "common": {
             "schedule_provider_id": "a/vision",
             "adjustment_provider_id": "b/tools",
-            "greeting_provider_id": "c/greet",
         },
     }
     flat = prepare_config(config)
@@ -76,13 +75,11 @@ def test_three_provider_settings_merge_into_one_without_losing_the_value():
     assert config["_provider_merged"] is True
     assert "schedule_provider_id" not in config["common"]
     assert "adjustment_provider_id" not in config["common"]
-    assert "greeting_provider_id" not in config["common"]
     assert not any(
         key in flat
         for key in (
             "schedule_provider_id",
             "adjustment_provider_id",
-            "greeting_provider_id",
         )
     )
 

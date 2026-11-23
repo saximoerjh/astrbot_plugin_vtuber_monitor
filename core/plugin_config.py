@@ -6,11 +6,7 @@ from functools import cache
 from pathlib import Path
 
 MERGED_PROVIDER_KEY = "multimodal_provider_id"
-LEGACY_PROVIDER_KEYS = (
-    "schedule_provider_id",
-    "adjustment_provider_id",
-    "greeting_provider_id",
-)
+LEGACY_PROVIDER_KEYS = ("schedule_provider_id", "adjustment_provider_id")
 DISCOVERY_KEY = "schedule_scan_times"
 LEGACY_DISCOVERY_KEYS = (
     "enable_dynamic_polling",
@@ -96,10 +92,9 @@ def drop_manual_credentials(config):
 
 
 def merge_provider_selection(config):
-    """把历史上分开的三个模型选择合并成一个，只做一次。
+    """把旧的周表识别与调播模型选择合并为一个，只做一次。
 
-    优先取周表识别 → 调播判断 → 凌晨问候里第一个非空的值（多数用户三者相同，
-    或后两者留空表示复用），合并后删掉旧键，避免留下互相矛盾的模型入口。
+    优先使用原周表识别模型，其次使用原调播模型。合并后删除旧键。
     """
     if config.get("_provider_merged", False):
         return False

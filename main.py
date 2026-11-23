@@ -17,7 +17,6 @@ from .core.schedule_diff import schedule_diff, format_diff
 from .services.adjustment_agent import AdjustmentAgent, DEFAULT_ADJUSTMENT_REGEX
 from .services.subscription_service import SubscriptionService
 from .services.dispatcher import Dispatcher
-from .services.greeting_service import GreetingService
 from .services.live_listener import LiveListener
 from .services.live_schedule import LiveScheduleRecorder
 from .services.dynamic_listener import DynamicListener
@@ -85,7 +84,6 @@ class MyPlugin(Star):
         self.discovery = None
         self.targets = None
         self.adjustment = None
-        self.greeting = None
         self.pinned = None
         self.profiles = None
         self.profile_task = None
@@ -116,9 +114,6 @@ class MyPlugin(Star):
         await data.initialize()
         await data.expire_adjustments()
         self.targets = TargetService(data)
-        self.greeting = GreetingService(
-            self.context, data, self.config.get("multimodal_provider_id", "")
-        )
         screenshot = PinnedScreenshot(
             self.config.get("screenshot_browser_channel", "auto")
         )
@@ -809,16 +804,6 @@ class MyPlugin(Star):
             text = f"{state.name}（UID {state.uid}）：{status}，房间 {state.room_id}。"
         except (ValueError, BiliError) as exc:
             text = str(exc)
-        yield event.plain_result(text)
-
-    @filter.command("vt_4016")
-    async def vt_4016(self, event: AstrMessageEvent):
-        """看看现在哪个国家是凌晨四点。"""
-        try:
-            text = await self.greeting.build()
-        except Exception:
-            logger.exception("VTuber 4016 greeting failed")
-            text = "凌晨四点查询失败，请稍后重试。"
         yield event.plain_result(text)
 
     @filter.command("vt_status")

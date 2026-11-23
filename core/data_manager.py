@@ -145,10 +145,6 @@ class DataManager:
                     image_path TEXT NOT NULL DEFAULT '',
                     attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending'
                 );
-                CREATE TABLE IF NOT EXISTS greeting_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL,
-                    picked_at TEXT NOT NULL
-                );
             """)
             )
 
@@ -1165,35 +1161,6 @@ class DataManager:
                 "invalid": sessions.get(LIVE_SESSION_INVALID, 0),
             }
             return status
-
-        return await asyncio.to_thread(self._run, read)
-
-    async def remember_greeting(self, label):
-        """记录最近抽选，支撑 /vt_4016 的不重复规则；表内条数有上限。"""
-        if not isinstance(label, str) or not label.strip():
-            raise ValueError("问候对象不能为空。")
-
-        def write(db):
-            db.execute(
-                "INSERT INTO greeting_history (label, picked_at) VALUES (?, ?)",
-                (label.strip()[:100], utc_now()),
-            )
-            db.execute(
-                "DELETE FROM greeting_history WHERE id NOT IN "
-                "(SELECT id FROM greeting_history ORDER BY id DESC LIMIT 50)"
-            )
-
-        await asyncio.to_thread(self._run, write)
-
-    async def recent_greetings(self, limit=12):
-        def read(db):
-            return [
-                row["label"]
-                for row in db.execute(
-                    "SELECT label FROM greeting_history ORDER BY id DESC LIMIT ?",
-                    (int(limit),),
-                )
-            ]
 
         return await asyncio.to_thread(self._run, read)
 

@@ -20,7 +20,7 @@
         "description": "多模态识别模型",
         "type": "string",
         "default": "",
-        "hint": "周表识别、调播判断、凌晨问候共用。要能看图，调播判断还要能调工具；留空则不解析周表、不调播，问候用固定句式。",
+        "hint": "周表识别和调播判断共用。周表识别需要图片输入，调播判断需要工具调用。留空时跳过周表解析和自动调播。",
         "_special": "select_provider"
       }
     }
@@ -264,7 +264,7 @@
     "invisible": true
   },
   "multimodal_provider_id": {
-    "description": "周表识别、调播判断与凌晨问候共用的多模态模型提供商 ID",
+    "description": "周表识别与调播判断共用的多模态模型提供商 ID",
     "type": "string",
     "default": "",
     "invisible": true
