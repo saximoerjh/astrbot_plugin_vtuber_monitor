@@ -12,7 +12,9 @@ class SubscriptionService:
         self.discovery = discovery
         self._scans = {}
 
-    async def subscribe(self, uid: str | int, umo: str, level: str = "normal", user_id=""):
+    async def subscribe(
+        self, uid: str | int, umo: str, level: str = "normal", user_id=""
+    ):
         uid = validate_uid(uid)
         validate_umo(umo)
         try:
@@ -22,19 +24,32 @@ class SubscriptionService:
         state = await self.bili.get_user_info(uid)
         initial = None
         if level == FollowLevel.SPECIAL and not any(
-            sub.level == FollowLevel.SPECIAL for sub in await self.data.get_subscriptions_by_uid(uid)
+            sub.level == FollowLevel.SPECIAL
+            for sub in await self.data.get_subscriptions_by_uid(uid)
         ):
             initial = await self.bili.get_latest_dynamics(uid)
-        await self.data.add_subscription(state, umo, level, initial_dynamics=initial, user_id=user_id)
-        if level == FollowLevel.SPECIAL and self.discovery is not None and uid not in self._scans:
-            self._scans[uid] = asyncio.create_task(self._initial_scan(uid, initial), name=f"vtuber-initial-scan-{uid}")
+        await self.data.add_subscription(
+            state, umo, level, initial_dynamics=initial, user_id=user_id
+        )
+        if (
+            level == FollowLevel.SPECIAL
+            and self.discovery is not None
+            and uid not in self._scans
+        ):
+            self._scans[uid] = asyncio.create_task(
+                self._initial_scan(uid, initial), name=f"vtuber-initial-scan-{uid}"
+            )
         return state
 
     async def _initial_scan(self, uid, posts):
         try:
             await self.discovery.scan(uid, posts)
         except Exception as exc:
-            logger.warning("Subscription saved; initial schedule scan failed uid=%s type=%s", uid, type(exc).__name__)
+            logger.warning(
+                "Subscription saved; initial schedule scan failed uid=%s type=%s",
+                uid,
+                type(exc).__name__,
+            )
         finally:
             self._scans.pop(uid, None)
 

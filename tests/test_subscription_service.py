@@ -6,8 +6,15 @@ import pytest
 
 from astrbot_plugin_vtuber_monitor.bili_client import BiliError
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
-from astrbot_plugin_vtuber_monitor.core.models import FollowLevel, Subscription, VtuberState, validate_uid
-from astrbot_plugin_vtuber_monitor.services.subscription_service import SubscriptionService
+from astrbot_plugin_vtuber_monitor.core.models import (
+    FollowLevel,
+    Subscription,
+    VtuberState,
+    validate_uid,
+)
+from astrbot_plugin_vtuber_monitor.services.subscription_service import (
+    SubscriptionService,
+)
 
 
 @pytest.mark.parametrize("uid", [0, -1, True, "", "1.0", "abc", "1 OR 1=1", 2**63])
@@ -50,7 +57,11 @@ async def test_failure_does_not_write(tmp_path):
         await service.subscribe(123, "umo")
     assert await data.get_subscription(123, "umo") is None
     assert await data.get_vtuber_state(123) is None
-    for uid, umo, level in [(0, "umo", "normal"), (123, "", "normal"), (123, "umo", "invalid")]:
+    for uid, umo, level in [
+        (0, "umo", "normal"),
+        (123, "", "normal"),
+        (123, "umo", "invalid"),
+    ]:
         with pytest.raises(ValueError):
             await service.subscribe(uid, umo, level)
     assert client.get_user_info.await_count == 1
@@ -63,7 +74,9 @@ async def test_concurrent_upserts_and_level_roundtrip(tmp_path):
     state = VtuberState(123, "主播", 456, False)
     await asyncio.gather(*(data.add_subscription(state, "umo") for _ in range(10)))
     assert len(await data.get_subscriptions_by_uid(123)) == 1
-    await data.add_subscription(VtuberState(123, "新名称", 456, True), "umo", FollowLevel.SPECIAL)
+    await data.add_subscription(
+        VtuberState(123, "新名称", 456, True), "umo", FollowLevel.SPECIAL
+    )
     assert await data.get_special_vtubers() == [123]
     assert (await data.get_vtuber_state(123)).is_live is False
     await data.add_subscription(state, "umo", FollowLevel.NORMAL)

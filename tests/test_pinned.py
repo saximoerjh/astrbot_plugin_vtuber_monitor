@@ -8,13 +8,22 @@ from astrbot_plugin_vtuber_monitor.bili_client import BiliClient, BiliError
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost
 from astrbot_plugin_vtuber_monitor.services.pinned_service import PinnedService
 from astrbot_plugin_vtuber_monitor.services.pinned_screenshot import (
-    DEVICE_SCALE, FONT_SCALE, PinnedScreenshot, ScreenshotError, card_script, card_style, text_matches)
+    DEVICE_SCALE,
+    FONT_SCALE,
+    PinnedScreenshot,
+    ScreenshotError,
+    card_script,
+    card_style,
+    text_matches,
+)
 
 
 def test_dynamic_text_check_ignores_bilibili_emoji_placeholders():
     """最新动态常带 [UPOWER_...] 表情，页面上是图片，inner_text 里找不到占位符。"""
-    assert text_matches("节日第一天大家恰了什么[UPOWER_1298779265_星星]",
-                        "灰泽满Hazel2026年10月01日17:53节日第一天大家恰了什么")
+    assert text_matches(
+        "节日第一天大家恰了什么[UPOWER_1298779265_星星]",
+        "灰泽满Hazel2026年10月01日17:53节日第一天大家恰了什么",
+    )
     assert text_matches("[UP_1_喵][UP_1_汪]", "页面只剩表情图片")
     assert not text_matches("今天休息", "页面显示的是别的内容")
 
@@ -38,9 +47,13 @@ def test_dynamic_screenshot_is_phone_readable_by_default():
 
 def components(images=("https://i0.hdslb.com/a.png", "https://i0.hdslb.com/b.png")):
     post = DynamicPost(1, "123", "置顶全文", 0, images, True)
-    bili = SimpleNamespace(get_pinned_dynamic=AsyncMock(return_value=post),
-                           download_image=AsyncMock(), browser_cookies=lambda: [],
-                           dynamic_url=BiliClient.dynamic_url, preview_image_url=BiliClient.preview_image_url)
+    bili = SimpleNamespace(
+        get_pinned_dynamic=AsyncMock(return_value=post),
+        download_image=AsyncMock(),
+        browser_cookies=lambda: [],
+        dynamic_url=BiliClient.dynamic_url,
+        preview_image_url=BiliClient.preview_image_url,
+    )
     screenshot = SimpleNamespace(capture=AsyncMock(return_value=b"screenshot"))
     selector = SimpleNamespace(select=AsyncMock(return_value=list(images)))
     return bili, screenshot, PinnedService(bili, screenshot, selector)
@@ -49,15 +62,23 @@ def components(images=("https://i0.hdslb.com/a.png", "https://i0.hdslb.com/b.png
 @pytest.mark.asyncio
 async def test_pinned_order_only_confirmed_schedules_no_trailing_text():
     bili, screenshot, service = components()
+
     async def download(url):
         if url.endswith("a.png"):
             await asyncio.sleep(0.01)
         return url.encode()
+
     bili.download_image.side_effect = download
     parts = await service.build(1)
-    assert [part.image for part in parts] == [b"screenshot", b"https://i0.hdslb.com/a.png", b"https://i0.hdslb.com/b.png"]
+    assert [part.image for part in parts] == [
+        b"screenshot",
+        b"https://i0.hdslb.com/a.png",
+        b"https://i0.hdslb.com/b.png",
+    ]
     assert all(not part.text for part in parts)
-    screenshot.capture.assert_awaited_once_with(bili.get_pinned_dynamic.return_value, [])
+    screenshot.capture.assert_awaited_once_with(
+        bili.get_pinned_dynamic.return_value, []
+    )
     assert not service._tasks
 
 
@@ -65,7 +86,12 @@ async def test_pinned_order_only_confirmed_schedules_no_trailing_text():
 async def test_screenshot_failure_and_single_image_failure_are_explicit():
     bili, screenshot, service = components()
     screenshot.capture.side_effect = ScreenshotError("浏览器不可用")
-    bili.download_image.side_effect = [BiliError("too large"), b"preview", BiliError("failed"), BiliError("failed")]
+    bili.download_image.side_effect = [
+        BiliError("too large"),
+        b"preview",
+        BiliError("failed"),
+        BiliError("failed"),
+    ]
     parts = await service.build(1)
     assert "未生成" in parts[0].text and parts[0].image is None
     assert parts[1].image == b"preview" and "压缩预览" in parts[1].text
@@ -100,12 +126,14 @@ async def test_pinned_excludes_unrecognized_images():
 async def test_shutdown_cancels_screenshot_and_rejects_new_requests():
     bili, screenshot, service = components()
     entered, closed = asyncio.Event(), asyncio.Event()
+
     async def capture(*args):
         entered.set()
         try:
             await asyncio.Event().wait()
         finally:
             closed.set()
+
     screenshot.capture.side_effect = capture
     task = asyncio.create_task(service.build(1))
     await entered.wait()
@@ -120,7 +148,9 @@ async def test_shutdown_cancels_screenshot_and_rejects_new_requests():
 @pytest.mark.asyncio
 async def test_screenshot_timeout_import_error_and_cancel_do_not_leak_details():
     screenshot = PinnedScreenshot(timeout=0.01)
-    screenshot._capture = AsyncMock(side_effect=RuntimeError("fake-sensitive-browser-error"))
+    screenshot._capture = AsyncMock(
+        side_effect=RuntimeError("fake-sensitive-browser-error")
+    )
     with pytest.raises(ScreenshotError) as error:
         await screenshot.capture(None, [])
     assert "fake-sensitive" not in str(error.value)
@@ -130,8 +160,10 @@ async def test_screenshot_timeout_import_error_and_cancel_do_not_leak_details():
     screenshot._capture.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
         await screenshot.capture(None, [])
+
     async def hang(*args):
         await asyncio.Event().wait()
+
     screenshot._capture.side_effect = hang
     with pytest.raises(ScreenshotError, match="超时"):
         await screenshot.capture(None, [])
@@ -146,7 +178,10 @@ async def test_browser_cookies_are_domain_scoped_and_preview_restricted():
         cookies = bili.browser_cookies()
         assert len(cookies) == 1 and cookies[0]["name"] == "SESSDATA"
         assert cookies[0]["domain"] == ".bilibili.com"
-        assert BiliClient.preview_image_url("http://i0.hdslb.com/a.png") == "https://i0.hdslb.com/a.png@1600w_90q.webp"
+        assert (
+            BiliClient.preview_image_url("http://i0.hdslb.com/a.png")
+            == "https://i0.hdslb.com/a.png@1600w_90q.webp"
+        )
         with pytest.raises(BiliError):
             BiliClient.preview_image_url("https://example.com/a.png")
     finally:

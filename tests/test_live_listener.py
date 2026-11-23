@@ -15,7 +15,9 @@ from astrbot_plugin_vtuber_monitor.services.live_listener import LiveListener
 async def test_queued_live_observation_recovers_notice_and_late_start(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
-    await data.add_subscription(VtuberState(1, "host", 10, None), "chat", FollowLevel.SPECIAL)
+    await data.add_subscription(
+        VtuberState(1, "host", 10, None), "chat", FollowLevel.SPECIAL
+    )
     client = AsyncMock()
     dispatch = Dispatcher(AsyncMock(), message_factory=lambda text: text)
     listener = LiveListener(data, client, special_only=True)
@@ -23,7 +25,9 @@ async def test_queued_live_observation_recovers_notice_and_late_start(tmp_path):
     await listener.poll_once()
     assert (await data.live_sessions_for_uid(1))[0]["start_time"] is None
     start = "2026-11-22T16:00:00+00:00"
-    client.get_live_room_info.return_value = VtuberState(1, "host", 10, True, live_started_at=start)
+    client.get_live_room_info.return_value = VtuberState(
+        1, "host", 10, True, live_started_at=start
+    )
     await listener.poll_once()
     assert (await data.live_sessions_for_uid(1))[0]["start_time"] == start
     client.get_live_room_info.return_value = VtuberState(1, "host", 10, False)
@@ -31,7 +35,10 @@ async def test_queued_live_observation_recovers_notice_and_late_start(tmp_path):
     client.get_live_room_info.return_value = VtuberState(1, "host", 10, True)
     await listener.poll_once()
     dispatch.context.send_message.assert_not_awaited()
-    assert [j["kind"] for j in await data.pending_notifications()] == ["live_end", "live_start"]
+    assert [j["kind"] for j in await data.pending_notifications()] == [
+        "live_end",
+        "live_start",
+    ]
     reopened = DataManager(tmp_path)
     await reopened.initialize()
     dispatch.context.send_message.side_effect = [False, True]
@@ -47,7 +54,9 @@ async def test_queued_live_observation_recovers_notice_and_late_start(tmp_path):
 async def test_default_special_scope_excludes_normal_destinations(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
-    await data.add_subscription(VtuberState(1, "主播", 10, False), "special", FollowLevel.SPECIAL, [])
+    await data.add_subscription(
+        VtuberState(1, "主播", 10, False), "special", FollowLevel.SPECIAL, []
+    )
     await data.add_subscription(VtuberState(1, "主播", 10, False), "normal")
     await data.add_subscription(VtuberState(2, "普通主播", 20, False), "normal")
     bili = AsyncMock()
@@ -73,11 +82,17 @@ async def test_rate_limit_pauses_whole_round_without_changing_state(tmp_path):
     assert listener.cooldown_remaining > 290
     assert not (await data.get_vtuber_state(1)).is_live
     assert not await data.pending_notifications()
-    with patch("astrbot_plugin_vtuber_monitor.services.live_listener.random.uniform", return_value=60):
+    with patch(
+        "astrbot_plugin_vtuber_monitor.services.live_listener.random.uniform",
+        return_value=60,
+    ):
         assert listener.next_delay() > 350
         listener.cooldown_until = 0
         assert listener.next_delay() == 180
-    with patch("astrbot_plugin_vtuber_monitor.services.live_listener.random.uniform", return_value=0):
+    with patch(
+        "astrbot_plugin_vtuber_monitor.services.live_listener.random.uniform",
+        return_value=0,
+    ):
         assert listener.next_delay() == 120
 
 
@@ -88,9 +103,19 @@ async def test_live_cover_title_and_image_failure_fallback(tmp_path):
     await data.add_subscription(VtuberState(1, "主播", 10, False), "a")
     context = AsyncMock()
     context.send_message.side_effect = [False, True, True]
-    dispatcher = Dispatcher(context, message_factory=str,
-                            live_message_factory=lambda text, cover: (text, cover))
-    state = VtuberState(1, "主播", 10, True, live_title="晚间歌回", live_cover="https://i0.hdslb.com/a.jpg")
+    dispatcher = Dispatcher(
+        context,
+        message_factory=str,
+        live_message_factory=lambda text, cover: (text, cover),
+    )
+    state = VtuberState(
+        1,
+        "主播",
+        10,
+        True,
+        live_title="晚间歌回",
+        live_cover="https://i0.hdslb.com/a.jpg",
+    )
     bili = AsyncMock()
     listener = LiveListener(data, bili)
     bili.get_live_room_info.return_value = state
@@ -134,7 +159,9 @@ async def test_transitions_restart_and_multi_session(tmp_path):
     await LiveListener(reopened, bili).poll_once()
     await dispatcher.flush_schedule_notifications(reopened)
     assert context.send_message.await_count == 4
-    assert (await reopened.get_vtuber_state(1)).last_live_change_at == state.last_live_change_at
+    assert (
+        await reopened.get_vtuber_state(1)
+    ).last_live_change_at == state.last_live_change_at
 
 
 @pytest.mark.asyncio
@@ -151,19 +178,24 @@ async def test_unknown_baseline_and_resubscribe(tmp_path):
     assert await data.get_subscribed_uids() == []
 
 
-@pytest.mark.parametrize("failure", [BiliError("timeout"), BiliError("412"), ValueError("missing JSON"), None])
+@pytest.mark.parametrize(
+    "failure",
+    [BiliError("timeout"), BiliError("412"), ValueError("missing JSON"), None],
+)
 @pytest.mark.asyncio
 async def test_bad_streamer_does_not_stop_round(tmp_path, failure):
     data = DataManager(tmp_path)
     await data.initialize()
     for uid in (1, 2):
         await data.add_subscription(VtuberState(uid, "主播", uid, False), "a")
+
     async def fetch(uid):
         if uid == 1:
             if failure is not None:
                 raise failure
             return {"unexpected": "data"}
         return VtuberState(uid, "主播", uid, True)
+
     bili = AsyncMock()
     bili.get_live_room_info.side_effect = fetch
     listener = LiveListener(data, bili)
@@ -224,8 +256,13 @@ async def test_notification_switches_can_come_from_a_live_reload(tmp_path):
     listener = LiveListener(data, bili, special_only=True)
     context = AsyncMock()
     latest = {"special_end": False}
-    dispatcher = Dispatcher(context, message_factory=str, special_end=True,
-                            flags_provider=AsyncMock(side_effect=lambda: dict(latest)))
+    dispatcher = Dispatcher(
+        context,
+        message_factory=str,
+        special_end=True,
+        flags_provider=AsyncMock(side_effect=lambda: dict(latest)),
+    )
+
     async def observe_end():
         bili.get_live_room_info.return_value = state
         await listener.poll_once()
@@ -239,7 +276,7 @@ async def test_notification_switches_can_come_from_a_live_reload(tmp_path):
     latest["special_end"] = True
     dispatcher.special_end = False
     await observe_end()
-    assert context.send_message.await_count == 1          # 配置现在开着 → 立刻发
+    assert context.send_message.await_count == 1  # 配置现在开着 → 立刻发
     # 重读失败时退回启动时的值，不能因为读配置出错就不发通知。
     dispatcher.flags_provider = AsyncMock(side_effect=RuntimeError("boom"))
     dispatcher.special_end = True
@@ -250,8 +287,10 @@ async def test_notification_switches_can_come_from_a_live_reload(tmp_path):
 @pytest.mark.asyncio
 async def test_send_timeout_and_cancellation():
     context = AsyncMock()
+
     async def hang(*args):
         await asyncio.Event().wait()
+
     context.send_message.side_effect = hang
     dispatcher = Dispatcher(context, message_factory=str, send_timeout=0.01)
     assert not await dispatcher.push_login_status("a", "t")
@@ -279,14 +318,18 @@ async def test_run_recovers_and_cancels():
 @pytest.mark.asyncio
 async def test_atomic_transition_and_old_database_migration(tmp_path):
     db = sqlite3.connect(tmp_path / "monitor.sqlite3")
-    db.execute("CREATE TABLE vtubers (uid INTEGER PRIMARY KEY, name TEXT NOT NULL, room_id INTEGER NOT NULL, is_live INTEGER)")
+    db.execute(
+        "CREATE TABLE vtubers (uid INTEGER PRIMARY KEY, name TEXT NOT NULL, room_id INTEGER NOT NULL, is_live INTEGER)"
+    )
     db.execute("INSERT INTO vtubers VALUES (1, 'old', 10, 0)")
     db.commit()
     db.close()
     data = DataManager(tmp_path)
     await data.initialize()
     assert (await data.get_vtuber_state(1)).last_live_change_at is None
-    changes = await asyncio.gather(*(data.save_vtuber_state(VtuberState(1, "new", 10, True)) for _ in range(5)))
+    changes = await asyncio.gather(
+        *(data.save_vtuber_state(VtuberState(1, "new", 10, True)) for _ in range(5))
+    )
     assert changes.count(True) == 1
 
 

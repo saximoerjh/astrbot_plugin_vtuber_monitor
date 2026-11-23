@@ -4,6 +4,7 @@
 ``ScheduleRenderer`` 负责 HTML 与 Playwright 截图。这样版式逻辑可以不启动
 浏览器就被测试覆盖。
 """
+
 import asyncio
 import hashlib
 import html
@@ -28,11 +29,22 @@ FONT_SCALE = 1.13
 MAX_BOARD_HEIGHT = 20000
 CACHE_LIMIT = 40
 
-STATUS_LABELS = {"scheduled": "已排期", "postponed": "已调播", "completed": "已结束",
-                 "cancelled": "已取消", "unknown": "待定", UNFULFILLED_STATUS: "未兑现"}
-STATUS_CLASSES = {"scheduled": "s-scheduled", "postponed": "s-postponed", "completed": "s-completed",
-                  "cancelled": "s-cancelled", "unknown": "s-unknown",
-                  UNFULFILLED_STATUS: "s-unfulfilled"}
+STATUS_LABELS = {
+    "scheduled": "已排期",
+    "postponed": "已调播",
+    "completed": "已结束",
+    "cancelled": "已取消",
+    "unknown": "待定",
+    UNFULFILLED_STATUS: "未兑现",
+}
+STATUS_CLASSES = {
+    "scheduled": "s-scheduled",
+    "postponed": "s-postponed",
+    "completed": "s-completed",
+    "cancelled": "s-cancelled",
+    "unknown": "s-unknown",
+    UNFULFILLED_STATUS: "s-unfulfilled",
+}
 # 算不算迟到：5 分钟以内属于正常开播准备，不算迟到，否则每场都会命中。
 LATE_THRESHOLD = timedelta(minutes=5)
 
@@ -58,7 +70,9 @@ def _planned_start(plan):
     if plan.get("source") == EXTRA_SOURCE or not plan.get("start_time"):
         return None
     try:
-        return datetime.fromisoformat(f"{plan['date']}T{plan['start_time']}:00").replace(tzinfo=CHINA)
+        return datetime.fromisoformat(
+            f"{plan['date']}T{plan['start_time']}:00"
+        ).replace(tzinfo=CHINA)
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -72,13 +86,17 @@ def _timing_stats(streams):
     """
     durations, delays, per_day, comparable = [], [], {}, 0
     for plan in streams or ():
-        intervals = [item for item in plan.get("actual_intervals") or () if item.get("start")]
+        intervals = [
+            item for item in plan.get("actual_intervals") or () if item.get("start")
+        ]
         if not intervals:
             continue
         span = timedelta()
         for item in intervals:
             if item.get("end"):
-                span += datetime.fromisoformat(item["end"]) - datetime.fromisoformat(item["start"])
+                span += datetime.fromisoformat(item["end"]) - datetime.fromisoformat(
+                    item["start"]
+                )
         if span:
             durations.append(span)
             day = str(plan.get("date") or "")
@@ -87,7 +105,9 @@ def _timing_stats(streams):
         if planned is None:
             continue
         comparable += 1
-        delay = min(datetime.fromisoformat(item["start"]) for item in intervals) - planned
+        delay = (
+            min(datetime.fromisoformat(item["start"]) for item in intervals) - planned
+        )
         if delay > LATE_THRESHOLD:
             delays.append(delay)
     total = sum(durations, timedelta())
@@ -101,29 +121,57 @@ def _timing_stats(streams):
 
 def _stats_cells(stats):
     return [
-        {"label": "直播总时长",
-         "value": _duration_text(stats["total"]) if stats["total"] is not None else "—"},
-        {"label": "日均直播时长",
-         "value": _duration_text(stats["daily_average"]) if stats["daily_average"] is not None else "—"},
-        {"label": "迟到次数",
-         "value": f"{stats['late_count']} 次" if stats["late_count"] is not None else "—"},
-        {"label": "平均迟到",
-         "value": _duration_text(stats["late_average"]) if stats["late_average"] is not None else "—"},
+        {
+            "label": "直播总时长",
+            "value": _duration_text(stats["total"])
+            if stats["total"] is not None
+            else "—",
+        },
+        {
+            "label": "日均直播时长",
+            "value": _duration_text(stats["daily_average"])
+            if stats["daily_average"] is not None
+            else "—",
+        },
+        {
+            "label": "迟到次数",
+            "value": f"{stats['late_count']} 次"
+            if stats["late_count"] is not None
+            else "—",
+        },
+        {
+            "label": "平均迟到",
+            "value": _duration_text(stats["late_average"])
+            if stats["late_average"] is not None
+            else "—",
+        },
     ]
 
 
 def _actual_line(plan_date, entry):
     """实际直播：只留起止时刻与时长，日期与来源标注都不在图里重复。"""
     start = datetime.fromisoformat(entry["start"]).astimezone(CHINA)
-    end = datetime.fromisoformat(entry["end"]).astimezone(CHINA) if entry.get("end") else None
+    end = (
+        datetime.fromisoformat(entry["end"]).astimezone(CHINA)
+        if entry.get("end")
+        else None
+    )
     # 列头已经写明日期，只有观测日期与所在列不一致时才需要写出来。
-    start_text = start.strftime("%H:%M") if start.date().isoformat() == plan_date \
+    start_text = (
+        start.strftime("%H:%M")
+        if start.date().isoformat() == plan_date
         else start.strftime("%m-%d %H:%M")
+    )
     if end is None:
         return f"{start_text} 起 · 直播中"
     gap = (end.date() - start.date()).days
-    end_text = (end.strftime("%H:%M") if gap == 0 else
-                f"次日 {end.strftime('%H:%M')}" if gap == 1 else end.strftime("%m-%d %H:%M"))
+    end_text = (
+        end.strftime("%H:%M")
+        if gap == 0
+        else f"次日 {end.strftime('%H:%M')}"
+        if gap == 1
+        else end.strftime("%m-%d %H:%M")
+    )
     return f"{start_text}–{end_text} · {_duration_text(end - start)}"
 
 
@@ -163,12 +211,15 @@ def _stream_item(plan):
     }
     if extra:
         item["original_label"] = "周表外记录"
-    elif plan.get("rescheduled_start_time") or plan.get("start_time") != plan.get("original_start_time"):
+    elif plan.get("rescheduled_start_time") or plan.get("start_time") != plan.get(
+        "original_start_time"
+    ):
         # 只有实际排期与原定不一致时，才需要额外说明原来的时间。
         item["original_label"] = (
             f"原定 {date.fromisoformat(original_day).strftime('%m-%d')}"
             f"（周{WEEKDAYS[date.fromisoformat(original_day).weekday()]}）"
-            f"{_range(plan.get('original_start_time'), plan.get('original_end_time'))}")
+            f"{_range(plan.get('original_start_time'), plan.get('original_end_time'))}"
+        )
     for entry in plan.get("actual_intervals") or ():
         if not entry.get("start"):
             continue
@@ -177,33 +228,51 @@ def _stream_item(plan):
     return item
 
 
-def build_schedule_view(schedule, *, uid, display_name="", summary=None, today=None, banner=None):
+def build_schedule_view(
+    schedule, *, uid, display_name="", summary=None, today=None, banner=None
+):
     """把周表整理成模板数据：7 天时间轴 + 场次卡片 + 实际直播统计。"""
     if not isinstance(schedule, dict) or not schedule.get("week_start"):
         raise ValueError("周表数据无效。")
     streams = schedule.get("streams") or ()
     start = date.fromisoformat(schedule["week_start"])
     today = today or china_today()
-    days = [{"weekday": WEEKDAYS[(start + timedelta(days=offset)).weekday()],
-             "date": (start + timedelta(days=offset)).isoformat(),
-             "short": (start + timedelta(days=offset)).strftime("%m-%d"),
-             "is_today": start + timedelta(days=offset) == today,
-             "streams": []} for offset in range(7)]
+    days = [
+        {
+            "weekday": WEEKDAYS[(start + timedelta(days=offset)).weekday()],
+            "date": (start + timedelta(days=offset)).isoformat(),
+            "short": (start + timedelta(days=offset)).strftime("%m-%d"),
+            "is_today": start + timedelta(days=offset) == today,
+            "streams": [],
+        }
+        for offset in range(7)
+    ]
     by_date = {day["date"]: day for day in days}
     for plan in streams:
         # 按“有效日期”落列，调播后的场次出现在新的一天，原定时间留在卡片里。
-        target = by_date.get(plan.get("date") or "") or by_date.get(plan.get("original_date") or "") or days[0]
+        target = (
+            by_date.get(plan.get("date") or "")
+            or by_date.get(plan.get("original_date") or "")
+            or days[0]
+        )
         target["streams"].append(_stream_item(plan))
     for day in days:
-        day["streams"].sort(key=lambda item: (item["time_label"] == "待定", item["time_label"], item["title"]))
+        day["streams"].sort(
+            key=lambda item: (
+                item["time_label"] == "待定",
+                item["time_label"],
+                item["title"],
+            )
+        )
         day["count"] = len(day["streams"])
     end = start + timedelta(days=6)
     counts = dict(summary) if summary is not None else None
     if counts is not None:
         # 未兑现是周表自身的状态，按正在渲染的这份数据统计，
         # 免得调用方传进来的口径与图上的红标对不上。
-        counts["unfulfilled"] = sum(1 for plan in streams
-                                    if plan.get("status") == UNFULFILLED_STATUS)
+        counts["unfulfilled"] = sum(
+            1 for plan in streams if plan.get("status") == UNFULFILLED_STATUS
+        )
     return {
         "uid": int(uid),
         "name": (display_name or "").strip() or f"UID {uid}",
@@ -213,13 +282,20 @@ def build_schedule_view(schedule, *, uid, display_name="", summary=None, today=N
         "revision": schedule.get("revision", 0),
         "days": days,
         "total": sum(day["count"] for day in days),
-        "summary_text": (("本周还没有排期（周表未发布），下面是直播记录。"
-                          if not any(plan.get("source") != EXTRA_SOURCE for plan in streams) else "")
-                         + format_live_summary(counts)),
+        "summary_text": (
+            (
+                "本周还没有排期（周表未发布），下面是直播记录。"
+                if not any(plan.get("source") != EXTRA_SOURCE for plan in streams)
+                else ""
+            )
+            + format_live_summary(counts)
+        ),
         "summary_ok": summary is not None,
         "stats": _stats_cells(_timing_stats(streams)),
-        "banner": {"header": (banner or {}).get("header", ""),
-                   "avatar": (banner or {}).get("avatar", "")},
+        "banner": {
+            "header": (banner or {}).get("header", ""),
+            "avatar": (banner or {}).get("avatar", ""),
+        },
     }
 
 
@@ -312,8 +388,11 @@ def _stream_html(item):
     for line in item["actual_lines"]:
         # 时长与“直播中”不可拆行，否则会出现“· 2 / 小时13分”这种断法。
         head, separator, tail = line.rpartition(" · ")
-        body = (f'{_escape(head)} · <span class="atom">{_escape(tail)}</span>' if separator
-                else f'<span class="atom">{_escape(line)}</span>')
+        body = (
+            f'{_escape(head)} · <span class="atom">{_escape(tail)}</span>'
+            if separator
+            else f'<span class="atom">{_escape(line)}</span>'
+        )
         blocks.append(f'<div class="actual">实际 {body}</div>')
     return f'<article class="card {item["status_class"]}">{"".join(blocks)}</article>'
 
@@ -323,19 +402,24 @@ def _day_html(day):
         slots = "".join(_stream_html(item) for item in day["streams"])
     else:
         slots = '<div class="empty">无场次</div>'
-    return (f'<section class="col{" col-today" if day["is_today"] else ""}">'
-            f'<div class="dayhead"><span class="wd">周{day["weekday"]}'
-            f'{"（今天）" if day["is_today"] else ""}</span>'
-            f'<span class="dt">{day["short"]}</span></div>'
-            f'<div class="slots">{slots}</div></section>')
+    return (
+        f'<section class="col{" col-today" if day["is_today"] else ""}">'
+        f'<div class="dayhead"><span class="wd">周{day["weekday"]}'
+        f"{'（今天）' if day['is_today'] else ''}</span>"
+        f'<span class="dt">{day["short"]}</span></div>'
+        f'<div class="slots">{slots}</div></section>'
+    )
 
 
 def _scaled_style(width, columns, font_scale):
     """按比例放大所有像素值；外层宽度单独给定，保证输出宽度可控。"""
     css = _STYLE
     if font_scale != 1:
-        css = re.sub(r"(?<![\w.])(\d+(?:\.\d+)?)px",
-                     lambda match: f"{float(match.group(1)) * font_scale:.1f}px", css)
+        css = re.sub(
+            r"(?<![\w.])(\d+(?:\.\d+)?)px",
+            lambda match: f"{float(match.group(1)) * font_scale:.1f}px",
+            css,
+        )
     # 用占位符替换而不是 % 格式化：CSS 里的百分号（渐变、background-position）
     # 会被 % 当成本地格式化占位，之前就在这里炸过一次。
     return css.replace("__WIDTH__", str(width)).replace("__COLUMNS__", str(columns))
@@ -345,33 +429,45 @@ def _hero_html(view):
     """顶部：有空间头图时用横幅＋头像，和 B 站空间页一致；没有就保持原来的标题行。"""
     banner = view.get("banner") or {}
     header, avatar = banner.get("header", ""), banner.get("avatar", "")
-    meta = (f'UID {view["uid"]} · 周表 {view["week_start"]} ~ {view["week_end"]}'
-            f' · 共 {view["total"]} 场 · 修订 {view["revision"]}')
+    meta = (
+        f"UID {view['uid']} · 周表 {view['week_start']} ~ {view['week_end']}"
+        f" · 共 {view['total']} 场 · 修订 {view['revision']}"
+    )
     if not header and not avatar:
-        return ('<header class="head">'
-                f'<div class="name">{_escape(view["name"])}</div>'
-                f'<div class="sub">{_escape(meta)}</div></header>')
-    avatar_html = f'<img class="avatar" src="{_escape(avatar)}" alt="">' if avatar else ""
-    style = f' style="background-image:url(\'{_escape(header)}\')"' if header else ""
-    return (f'<header class="hero {"hero-image" if header else "hero-plain"}"{style}>'
-            f'<div class="hero-inner">{avatar_html}<div>'
-            f'<div class="hero-name">{_escape(view["name"])}</div>'
-            f'<div class="hero-meta">{_escape(meta)}</div></div></div></header>')
+        return (
+            '<header class="head">'
+            f'<div class="name">{_escape(view["name"])}</div>'
+            f'<div class="sub">{_escape(meta)}</div></header>'
+        )
+    avatar_html = (
+        f'<img class="avatar" src="{_escape(avatar)}" alt="">' if avatar else ""
+    )
+    style = f" style=\"background-image:url('{_escape(header)}')\"" if header else ""
+    return (
+        f'<header class="hero {"hero-image" if header else "hero-plain"}"{style}>'
+        f'<div class="hero-inner">{avatar_html}<div>'
+        f'<div class="hero-name">{_escape(view["name"])}</div>'
+        f'<div class="hero-meta">{_escape(meta)}</div></div></div></header>'
+    )
 
 
-def build_schedule_html(view, *, width=BOARD_WIDTH, columns=BOARD_COLUMNS, font_scale=FONT_SCALE):
+def build_schedule_html(
+    view, *, width=BOARD_WIDTH, columns=BOARD_COLUMNS, font_scale=FONT_SCALE
+):
     """生成自包含 HTML：样式内联，不引用任何外部资源。"""
     generated = datetime.now(CHINA).strftime("%Y-%m-%d %H:%M")
     day_columns = "".join(_day_html(day) for day in view["days"])
-    stats = "".join(f'<div class="stat"><div class="stat-label">{_escape(item["label"])}</div>'
-                    f'<div class="stat-value">{_escape(item["value"])}</div></div>'
-                    for item in view["stats"])
+    stats = "".join(
+        f'<div class="stat"><div class="stat-label">{_escape(item["label"])}</div>'
+        f'<div class="stat-value">{_escape(item["value"])}</div></div>'
+        for item in view["stats"]
+    )
     summary_class = "sum" if view["summary_ok"] else "sum sum-failed"
     return (
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>周表</title>'
         f"<style>{_scaled_style(width, columns, font_scale)}</style></head><body>"
         '<div id="schedule">'
-        f'{_hero_html(view)}'
+        f"{_hero_html(view)}"
         f'<div class="grid">{day_columns}</div>'
         f'<div class="stats">{stats}</div>'
         f'<footer class="foot"><div class="{summary_class}">{_escape(view["summary_text"])}</div>'
@@ -383,8 +479,17 @@ def build_schedule_html(view, *, width=BOARD_WIDTH, columns=BOARD_COLUMNS, font_
 class ScheduleRenderer:
     """用本机浏览器把周表 HTML 截成图片，并按内容哈希缓存。"""
 
-    def __init__(self, data_dir, *, channel="auto", timeout=45, scale=2,
-                 width=BOARD_WIDTH, columns=BOARD_COLUMNS, font_scale=FONT_SCALE):
+    def __init__(
+        self,
+        data_dir,
+        *,
+        channel="auto",
+        timeout=45,
+        scale=2,
+        width=BOARD_WIDTH,
+        columns=BOARD_COLUMNS,
+        font_scale=FONT_SCALE,
+    ):
         if channel not in ("auto", "chromium", "msedge", "chrome"):
             raise ValueError("截图浏览器请选择 auto、chromium、msedge 或 chrome。")
         self.directory = Path(data_dir) / "schedule_render"
@@ -396,12 +501,16 @@ class ScheduleRenderer:
         return self._cache_path(self._html(view))
 
     def _html(self, view):
-        return build_schedule_html(view, width=self.width, columns=self.columns,
-                                   font_scale=self.font_scale)
+        return build_schedule_html(
+            view, width=self.width, columns=self.columns, font_scale=self.font_scale
+        )
 
     def _cache_path(self, html_text):
         # 直接按最终 HTML 做键：内容、版式参数、样式与结构任何一处变化都会重新出图。
-        return self.directory / f"{hashlib.sha256(html_text.encode('utf-8')).hexdigest()}.png"
+        return (
+            self.directory
+            / f"{hashlib.sha256(html_text.encode('utf-8')).hexdigest()}.png"
+        )
 
     async def render(self, view):
         """返回图片绝对路径；内容未变时复用已有文件。"""
@@ -422,9 +531,14 @@ class ScheduleRenderer:
 
     async def _prune(self):
         def clean():
-            files = sorted(self.directory.glob("*.png"), key=lambda item: item.stat().st_mtime, reverse=True)
+            files = sorted(
+                self.directory.glob("*.png"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
             for stale in files[CACHE_LIMIT:]:
                 stale.unlink(missing_ok=True)
+
         try:
             await asyncio.to_thread(clean)
         except OSError:
@@ -436,23 +550,35 @@ class ScheduleRenderer:
             async with asyncio.timeout(self.timeout):
                 return await self._screenshot(html_text)
         except ImportError:
-            raise ScheduleRenderError("未安装截图依赖，请安装插件依赖 playwright。") from None
+            raise ScheduleRenderError(
+                "未安装截图依赖，请安装插件依赖 playwright。"
+            ) from None
         except ScheduleRenderError:
             raise
         except Exception:
-            raise ScheduleRenderError("周表图片生成失败（浏览器不可用或渲染超时），已改为发送文字。") from None
+            raise ScheduleRenderError(
+                "周表图片生成失败（浏览器不可用或渲染超时），已改为发送文字。"
+            ) from None
 
     async def _screenshot(self, html_text):
         from playwright.async_api import async_playwright
+
         async with async_playwright() as playwright:
             channel = self.channel
             if channel == "auto":
-                channel = ("chromium" if Path(playwright.chromium.executable_path).exists()
-                           or sys.platform != "win32" else "msedge")
+                channel = (
+                    "chromium"
+                    if Path(playwright.chromium.executable_path).exists()
+                    or sys.platform != "win32"
+                    else "msedge"
+                )
             browser = await playwright.chromium.launch(channel=channel, headless=True)
             try:
-                context = await browser.new_context(viewport={"width": self.width, "height": 900},
-                                                    device_scale_factor=self.scale, locale="zh-CN")
+                context = await browser.new_context(
+                    viewport={"width": self.width, "height": 900},
+                    device_scale_factor=self.scale,
+                    locale="zh-CN",
+                )
                 page = await context.new_page()
                 # 页面自包含，不加载任何外部资源，也不需要网络。
                 await page.set_content(html_text, wait_until="load")
@@ -463,7 +589,9 @@ class ScheduleRenderer:
                 if not box:
                     raise ScheduleRenderError("周表版面为空，未生成图片。")
                 if box["height"] > MAX_BOARD_HEIGHT:
-                    raise ScheduleRenderError("周表过长，无法生成完整图片，已改为发送文字。")
+                    raise ScheduleRenderError(
+                        "周表过长，无法生成完整图片，已改为发送文字。"
+                    )
                 return await board.screenshot(type="png", animations="disabled")
             finally:
                 await browser.close()

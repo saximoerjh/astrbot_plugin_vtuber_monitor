@@ -1,4 +1,4 @@
-﻿from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig, logger
 import asyncio
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -28,7 +28,12 @@ from .services.schedule_discovery import ScheduleDiscovery, DEFAULT_KEYWORDS
 from .services.schedule_watch import DEFAULT_SCAN_TIMES, ScheduleWatch
 from .services.target_service import TargetService
 from .services.pinned_screenshot import PinnedScreenshot
-from .services.pinned_service import PinnedService, forward_chain, image_then_text, message_parts
+from .services.pinned_service import (
+    PinnedService,
+    forward_chain,
+    image_then_text,
+    message_parts,
+)
 from .services.profile_service import ProfileService
 from .services.schedule_image_selector import ScheduleImageSelector
 from .services.schedule_report import format_schedule_report
@@ -44,7 +49,11 @@ def local_time(value):
     if not value:
         return "无"
     try:
-        return datetime.fromisoformat(str(value)).astimezone(CHINA).strftime("%m-%d %H:%M:%S")
+        return (
+            datetime.fromisoformat(str(value))
+            .astimezone(CHINA)
+            .strftime("%m-%d %H:%M:%S")
+        )
     except (TypeError, ValueError):
         return str(value)
 
@@ -108,14 +117,19 @@ class MyPlugin(Star):
         await data.expire_adjustments()
         self.targets = TargetService(data)
         self.greeting = GreetingService(
-            self.context, data,
-            self.config.get("multimodal_provider_id", ""))
-        screenshot = PinnedScreenshot(self.config.get("screenshot_browser_channel", "auto"))
+            self.context, data, self.config.get("multimodal_provider_id", "")
+        )
+        screenshot = PinnedScreenshot(
+            self.config.get("screenshot_browser_channel", "auto")
+        )
         self.screenshot = screenshot
         self.schedule_renderer = ScheduleRenderer(
-            data_dir, channel=self.config.get("screenshot_browser_channel", "auto"))
+            data_dir, channel=self.config.get("screenshot_browser_channel", "auto")
+        )
         if self.config_path is None:
-            self.config_path = Path(data_dir).parents[1] / "config" / f"{PLUGIN_NAME}_config.json"
+            self.config_path = (
+                Path(data_dir).parents[1] / "config" / f"{PLUGIN_NAME}_config.json"
+            )
         self.dispatcher = Dispatcher(
             self.context,
             normal_start=self.config.get("normal_live_start_push", True),
@@ -125,21 +139,36 @@ class MyPlugin(Star):
             flags_provider=self._notification_flags,
             notice_image=self._adjustment_notice_image,
         )
-        self.dispatcher.schedule_enabled = bool(self.config.get("enable_schedule_push", False))
-        self.dispatcher.adjustment_enabled = bool(self.config.get("enable_adjustment_push", False))
+        self.dispatcher.schedule_enabled = bool(
+            self.config.get("enable_schedule_push", False)
+        )
+        self.dispatcher.adjustment_enabled = bool(
+            self.config.get("enable_adjustment_push", False)
+        )
         self.live_recorder = LiveScheduleRecorder(
-            data, unfulfilled_after=timedelta(hours=float(self.config.get("unfulfilled_after_hours", 2))),
-            min_live_duration=timedelta(minutes=float(self.config.get("min_live_minutes", 10))))
+            data,
+            unfulfilled_after=timedelta(
+                hours=float(self.config.get("unfulfilled_after_hours", 2))
+            ),
+            min_live_duration=timedelta(
+                minutes=float(self.config.get("min_live_minutes", 10))
+            ),
+        )
         await self._repair_legacy_placements(data)
-        self.schedules = ScheduleService(data, schedule_push=self.dispatcher.schedule_enabled,
-                                        adjustment_push=self.dispatcher.adjustment_enabled,
-                                        reconcile_week=self.live_recorder.reconcile_week)
+        self.schedules = ScheduleService(
+            data,
+            schedule_push=self.dispatcher.schedule_enabled,
+            adjustment_push=self.dispatcher.adjustment_enabled,
+            reconcile_week=self.live_recorder.reconcile_week,
+        )
         # 本周还没有周表时，直播轮询会先建一张空白周表当容器（见 LiveScheduleRecorder）。
         self.live_recorder.placeholder = data.ensure_schedule_placeholder
         self.adjustment = AdjustmentAgent(
-            self.context, self.schedules,
+            self.context,
+            self.schedules,
             self.config.get("multimodal_provider_id", ""),
-            self.config.get("adjustment_regex", DEFAULT_ADJUSTMENT_REGEX))
+            self.config.get("adjustment_regex", DEFAULT_ADJUSTMENT_REGEX),
+        )
         self.bili = BiliClient(
             timeout=float(self.config.get("request_timeout", 10)),
             max_retry=self.config.get("max_retry", 2),
@@ -148,30 +177,54 @@ class MyPlugin(Star):
         saved_credentials = await data.get_credentials()
         if saved_credentials:
             self.bili.set_credentials(saved_credentials)
-        parser = ScheduleParser(self.context, self.config.get("multimodal_provider_id", ""))
-        self.discovery = ScheduleDiscovery(data, self.bili, parser, self.schedules,
-                                           self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)))
+        parser = ScheduleParser(
+            self.context, self.config.get("multimodal_provider_id", "")
+        )
+        self.discovery = ScheduleDiscovery(
+            data,
+            self.bili,
+            parser,
+            self.schedules,
+            self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)),
+        )
         self.schedule_watch = ScheduleWatch(
-            data, self.bili, parser, self.schedules, bootstrap=self.discovery.scan,
-            is_candidate=self.discovery.is_candidate, lock_for=self.discovery.lock_for,
+            data,
+            self.bili,
+            parser,
+            self.schedules,
+            bootstrap=self.discovery.scan,
+            is_candidate=self.discovery.is_candidate,
+            lock_for=self.discovery.lock_for,
             scan_times=self.config.get("schedule_scan_times", list(DEFAULT_SCAN_TIMES)),
-            auto_parse_normal=bool(self.config.get("auto_parse_normal_schedule", False)))
+            auto_parse_normal=bool(
+                self.config.get("auto_parse_normal_schedule", False)
+            ),
+        )
         self.login = LoginService(data, self.bili, self.dispatcher.push_login_status)
         self.profiles = ProfileService(
-            data, self.bili, channel=self.config.get("screenshot_browser_channel", "auto"))
-        self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, parser))
+            data,
+            self.bili,
+            channel=self.config.get("screenshot_browser_channel", "auto"),
+        )
+        self.pinned = PinnedService(
+            self.bili, screenshot, ScheduleImageSelector(data, self.bili, parser)
+        )
         self.subscriptions = SubscriptionService(data, self.bili, self.discovery)
         self.live_listener = LiveListener(
-            data, self.bili,
+            data,
+            self.bili,
             float(self.config.get("live_poll_interval", 120)),
             float(self.config.get("live_poll_jitter", 60)),
             special_only=not self.config.get("enable_live_polling", False),
             schedule_recorder=self.live_recorder,
         )
         self.dynamic_listener = DynamicListener(
-            data, self.bili,
+            data,
+            self.bili,
             float(self.config.get("dynamic_poll_interval", 300)),
-            adjustment=self.adjustment if self.config.get("auto_adjustment_with_schedule", True) else None,
+            adjustment=self.adjustment
+            if self.config.get("auto_adjustment_with_schedule", True)
+            else None,
         )
 
     @filter.on_astrbot_loaded()
@@ -187,11 +240,15 @@ class MyPlugin(Star):
         """状态里那一行：当前实际生效的通知开关，以及它是从哪来的。"""
         flags = await self.dispatcher.notification_flags()
         source = "配置实时读取" if await self._notification_flags() else "启动时的配置"
+
         def word(value):
             return "开" if value else "关"
-        return (f"**通知开关**（{source}）：特别关注 上播{word(flags['special_start'])}"
-                f"／下播{word(flags['special_end'])}；普通关注 上播{word(flags['normal_start'])}"
-                f"／下播{word(flags['normal_end'])}")
+
+        return (
+            f"**通知开关**（{source}）：特别关注 上播{word(flags['special_start'])}"
+            f"／下播{word(flags['special_end'])}；普通关注 上播{word(flags['normal_start'])}"
+            f"／下播{word(flags['normal_end'])}"
+        )
 
     async def _repair_legacy_placements(self, data):
         """启动兜底：旧版本把同一场直播挂到多条周表条目上，这里收敛回一条。"""
@@ -205,48 +262,67 @@ class MyPlugin(Star):
                 logger.warning("Unable to repair live placements uid=%s", uid)
 
     def _start_tasks(self):
-        if getattr(self, "dispatcher", None) is not None and self.notification_task is None:
+        if (
+            getattr(self, "dispatcher", None) is not None
+            and self.notification_task is None
+        ):
             self.notification_task = asyncio.create_task(
-                self.dispatcher.run(self.targets.data), name="vtuber-monitor-notifications")
+                self.dispatcher.run(self.targets.data),
+                name="vtuber-monitor-notifications",
+            )
         if getattr(self, "targets", None) is not None and self.retention_task is None:
-            self.retention_task = asyncio.create_task(self._run_retention(), name="vtuber-monitor-retention")
+            self.retention_task = asyncio.create_task(
+                self._run_retention(), name="vtuber-monitor-retention"
+            )
         if self.schedule_watch.scan_times and (
             self.schedule_watch_task is None or self.schedule_watch_task.done()
         ):
             self.schedule_watch_task = asyncio.create_task(
-                self.schedule_watch.run(), name="vtuber-monitor-schedule-scan")
-        if (self.config.get("enable_live_polling", False) or
-                self.config.get("auto_special_live", True)) and (
-            self.live_listener_task is None or self.live_listener_task.done()
-        ):
+                self.schedule_watch.run(), name="vtuber-monitor-schedule-scan"
+            )
+        if (
+            self.config.get("enable_live_polling", False)
+            or self.config.get("auto_special_live", True)
+        ) and (self.live_listener_task is None or self.live_listener_task.done()):
             self.live_listener_task = asyncio.create_task(
-                self.live_listener.run(), name="vtuber-monitor-live")
+                self.live_listener.run(), name="vtuber-monitor-live"
+            )
             if self.live_reconciliation_task is None:
                 self.live_reconciliation_task = asyncio.create_task(
-                    self.live_listener.run_reconciliation(), name="vtuber-monitor-live-reconciliation")
+                    self.live_listener.run_reconciliation(),
+                    name="vtuber-monitor-live-reconciliation",
+                )
         if self.config.get("auto_adjustment_with_schedule", True) and (
             self.dynamic_listener_task is None or self.dynamic_listener_task.done()
         ):
             self.dynamic_listener_task = asyncio.create_task(
-                self.dynamic_listener.run(), name="vtuber-monitor-dynamic")
+                self.dynamic_listener.run(), name="vtuber-monitor-dynamic"
+            )
             if self.adjustment_task is None:
                 self.adjustment_task = asyncio.create_task(
-                    self.dynamic_listener.run_adjustments(), name="vtuber-monitor-adjustments")
+                    self.dynamic_listener.run_adjustments(),
+                    name="vtuber-monitor-adjustments",
+                )
         if self.profile_task is None or self.profile_task.done():
             # 头像与空间头图每天零点刷新，供周表图片使用。
             self.profile_task = asyncio.create_task(
-                self.profiles.run(), name="vtuber-monitor-profiles")
+                self.profiles.run(), name="vtuber-monitor-profiles"
+            )
 
     async def _run_retention(self):
         while True:
             try:
                 await self.targets.data.prune_schedule_images(protect_recent=True)
             except Exception as exc:
-                logger.warning("VTuber image retention failed type=%s", type(exc).__name__)
+                logger.warning(
+                    "VTuber image retention failed type=%s", type(exc).__name__
+                )
             try:
                 await self.targets.data.expire_adjustments()
             except Exception as exc:
-                logger.warning("VTuber adjustment expiration failed type=%s", type(exc).__name__)
+                logger.warning(
+                    "VTuber adjustment expiration failed type=%s", type(exc).__name__
+                )
             await asyncio.sleep(3600)
 
     @filter.command("vt_ping")
@@ -255,26 +331,42 @@ class MyPlugin(Star):
         yield event.plain_result("VTuber Monitor OK")
 
     async def _resolve_target(self, event, target):
-        return await self.targets.resolve(target, event.unified_msg_origin, event.get_sender_id())
+        return await self.targets.resolve(
+            target, event.unified_msg_origin, event.get_sender_id()
+        )
 
     @filter.command("vt_alias")
-    async def vt_alias(self, event: AstrMessageEvent, target: str = "", alias: str = ""):
+    async def vt_alias(
+        self, event: AstrMessageEvent, target: str = "", alias: str = ""
+    ):
         """为已订阅主播添加个人别名，保留已有别名。"""
         if not target or not alias:
             yield event.plain_result("用法：/vt_alias <UID或旧别名> <新别名>")
             return
         try:
-            uid, display = await self.targets.set_alias(target, alias, event.unified_msg_origin, event.get_sender_id())
-            yield event.plain_result(f"已设置别名：{display} → {uid}（已有别名保留）。可使用 /vt_schedule {display}。")
+            uid, display = await self.targets.set_alias(
+                target, alias, event.unified_msg_origin, event.get_sender_id()
+            )
+            yield event.plain_result(
+                f"已设置别名：{display} → {uid}（已有别名保留）。可使用 /vt_schedule {display}。"
+            )
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
     @filter.command("vt_alias_del")
-    async def vt_alias_del(self, event: AstrMessageEvent, target: str = "", alias: str = ""):
+    async def vt_alias_del(
+        self, event: AstrMessageEvent, target: str = "", alias: str = ""
+    ):
         """删除指定别名：/vt_alias_del <别名> 或 <UID> <别名>，不取消订阅。"""
         try:
-            removed = await self.targets.remove_alias(target, event.unified_msg_origin, event.get_sender_id(), alias)
-            yield event.plain_result("指定别名已删除，其他别名和订阅保持不变。" if removed else "未找到对应别名。")
+            removed = await self.targets.remove_alias(
+                target, event.unified_msg_origin, event.get_sender_id(), alias
+            )
+            yield event.plain_result(
+                "指定别名已删除，其他别名和订阅保持不变。"
+                if removed
+                else "未找到对应别名。"
+            )
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
@@ -286,8 +378,10 @@ class MyPlugin(Star):
             yield event.plain_result("请由 AstrBot 管理员在私聊中使用 /bili_login。")
             return
         try:
+
             async def send_image(path):
                 await event.send(event.image_result(path))
+
             await self.login.start(event.unified_msg_origin, send_image)
             text = "请用 Bilibili App 扫描二维码并确认登录，二维码约 3 分钟内有效。"
         except BiliError as exc:
@@ -298,15 +392,22 @@ class MyPlugin(Star):
         yield event.plain_result(text)
 
     @filter.command("vt_sub")
-    async def vt_sub(self, event: AstrMessageEvent, uid: str = "", level: str = "normal"):
+    async def vt_sub(
+        self, event: AstrMessageEvent, uid: str = "", level: str = "normal"
+    ):
         """订阅主播：/vt_sub <UID> [normal|special]。"""
         if not uid:
             yield event.plain_result("用法：/vt_sub <UID> [normal|special]")
             return
         try:
             uid = await self._resolve_target(event, uid)
-            state = await self.subscriptions.subscribe(uid, event.unified_msg_origin, level, user_id=event.get_sender_id())
-            running = self.live_listener_task is not None and not self.live_listener_task.done()
+            state = await self.subscriptions.subscribe(
+                uid, event.unified_msg_origin, level, user_id=event.get_sender_id()
+            )
+            running = (
+                self.live_listener_task is not None
+                and not self.live_listener_task.done()
+            )
             status = "直播监听运行中。" if running else "后台直播监听未启用。"
             text = f"已订阅 {state.name}（UID {state.uid}，{level}）。{status}"
             if level == "special":
@@ -323,7 +424,9 @@ class MyPlugin(Star):
         """取消当前会话的主播订阅。"""
         try:
             uid = await self._resolve_target(event, uid)
-            removed = await self.subscriptions.unsubscribe(uid, event.unified_msg_origin)
+            removed = await self.subscriptions.unsubscribe(
+                uid, event.unified_msg_origin
+            )
             text = "已取消订阅。" if removed else "当前会话未订阅该主播。"
         except ValueError as exc:
             text = str(exc)
@@ -333,11 +436,15 @@ class MyPlugin(Star):
         yield event.plain_result(text)
 
     @filter.command("vt_follow_level")
-    async def vt_follow_level(self, event: AstrMessageEvent, uid: str = "", level: str = ""):
+    async def vt_follow_level(
+        self, event: AstrMessageEvent, uid: str = "", level: str = ""
+    ):
         """修改当前会话已有订阅的关注级别。"""
         try:
             uid = await self._resolve_target(event, uid)
-            await self.subscriptions.change_level(uid, event.unified_msg_origin, level, user_id=event.get_sender_id())
+            await self.subscriptions.change_level(
+                uid, event.unified_msg_origin, level, user_id=event.get_sender_id()
+            )
             text = f"关注级别已更新为 {level}。动态采集和调播状态请查看 /vt_status。"
         except (ValueError, BiliError) as exc:
             text = str(exc)
@@ -383,10 +490,14 @@ class MyPlugin(Star):
                 return
             if event.get_platform_name() == "aiocqhttp":
                 try:
-                    await event.send(event.chain_result(forward_chain(parts, event.get_self_id())))
+                    await event.send(
+                        event.chain_result(forward_chain(parts, event.get_self_id()))
+                    )
                     return
                 except Exception:
-                    logger.warning("Pinned forward delivery failed; falling back to ordered messages")
+                    logger.warning(
+                        "Pinned forward delivery failed; falling back to ordered messages"
+                    )
                     yield event.plain_result("合并转发发送失败，改为按顺序发送。")
             for content in message_parts(parts):
                 yield event.chain_result(content)
@@ -398,7 +509,9 @@ class MyPlugin(Star):
 
     @filter.command("vt_parse_schedule")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def vt_parse_schedule(self, event: AstrMessageEvent, uid: str = "", week_start: str = ""):
+    async def vt_parse_schedule(
+        self, event: AstrMessageEvent, uid: str = "", week_start: str = ""
+    ):
         """管理员解析周表，可指定本周/上周/下周或 YYYY-MM-DD。"""
         target, resolved_uid = uid, None
         try:
@@ -409,18 +522,35 @@ class MyPlugin(Star):
             if override:
                 options["week_start"] = override.isoformat()
             records = await self.discovery.scan(uid, **options)
-            yield markdown_reply(event, format_schedule_report(
-                records, uid, target=target, week_start=override.isoformat() if override else ""))
+            yield markdown_reply(
+                event,
+                format_schedule_report(
+                    records,
+                    uid,
+                    target=target,
+                    week_start=override.isoformat() if override else "",
+                ),
+            )
         except (ValueError, BiliError) as exc:
-            link = f"\n查看动态页：https://space.bilibili.com/{resolved_uid}/dynamic" if resolved_uid else ""
+            link = (
+                f"\n查看动态页：https://space.bilibili.com/{resolved_uid}/dynamic"
+                if resolved_uid
+                else ""
+            )
             yield event.plain_result(str(exc) + link)
         except Exception:
             logger.warning("Manual schedule scan failed")
-            link = f"\n查看动态页：https://space.bilibili.com/{resolved_uid}/dynamic" if resolved_uid else ""
+            link = (
+                f"\n查看动态页：https://space.bilibili.com/{resolved_uid}/dynamic"
+                if resolved_uid
+                else ""
+            )
             yield event.plain_result("周表处理失败，请稍后重试。" + link)
 
     @filter.command("vt_schedule")
-    async def vt_schedule(self, event: AstrMessageEvent, uid: str = "", week_start: str = ""):
+    async def vt_schedule(
+        self, event: AstrMessageEvent, uid: str = "", week_start: str = ""
+    ):
         """查看缓存周表：/vt_schedule <UID或别名> [本周|上周|下周|YYYY-MM-DD]。"""
         try:
             # 在异步解析目标之前先固定相对日期，避免跨零点漂移。
@@ -428,7 +558,9 @@ class MyPlugin(Star):
             week_start = week.isoformat() if week else ""
             uid = await self._resolve_target(event, uid)
             schedule = await self.schedules.get_weekly_schedule(uid, week_start)
-            if self._schedule_blank(schedule) and await self._can_parse_on_view(uid, week_start, event):
+            if self._schedule_blank(schedule) and await self._can_parse_on_view(
+                uid, week_start, event
+            ):
                 # 主播常在定时扫描时间点之间就发了周表；用户主动查看时补一次解析，
                 # 省得非要等到时间点。只在缓存确实为空、且本会话是特别关注时才做。
                 yield event.plain_result("本周周表尚未解析，正在抓取置顶动态，请稍候…")
@@ -439,16 +571,24 @@ class MyPlugin(Star):
                     logger.warning("On-demand schedule parse failed uid=%s", uid)
                 schedule = await self.schedules.get_weekly_schedule(uid, week_start)
             if schedule is None:
-                text = (f"未找到 {week_start} 起始的周表。" if week_start else "未找到本周周表。")
+                text = (
+                    f"未找到 {week_start} 起始的周表。"
+                    if week_start
+                    else "未找到本周周表。"
+                )
                 text += "可用 /vt_schedule_history <UID> 查看缓存周次，或由管理员运行 /vt_parse_schedule <UID>。"
                 yield event.plain_result(text)
                 return
             summary = await self._live_summary(uid, schedule["week_start"])
             if self.config.get("schedule_image_enabled", True):
                 try:
-                    view = build_schedule_view(schedule, uid=uid, summary=summary,
-                                               display_name=await self._display_name(uid, event),
-                                               banner=await self.profiles.banner(uid))
+                    view = build_schedule_view(
+                        schedule,
+                        uid=uid,
+                        summary=summary,
+                        display_name=await self._display_name(uid, event),
+                        banner=await self.profiles.banner(uid),
+                    )
                     path = await self.schedule_renderer.render(view)
                 except Exception:
                     # 图片只是展示形式，任何渲染问题都不应让周表查询失败。
@@ -459,7 +599,9 @@ class MyPlugin(Star):
             by_day = {}
             for plan in schedule["streams"]:
                 by_day.setdefault(plan["date"], []).append(plan)
-            blocks = [f"## 周表 · {schedule['week_start']} 起（修订 {schedule.get('revision', 0)}）"]
+            blocks = [
+                f"## 周表 · {schedule['week_start']} 起（修订 {schedule.get('revision', 0)}）"
+            ]
             for day in sorted(by_day):
                 weekday = "一二三四五六日"[date.fromisoformat(day).weekday()]
                 blocks.append(f"### 周{weekday} {day[5:]}")
@@ -474,7 +616,9 @@ class MyPlugin(Star):
         """没有任何可用排期：完全没有周表，或只有一张空的占位容器（还没排期）。"""
         if schedule is None:
             return True
-        return not schedule.get("streams") and not str(schedule.get("source_dynamic_id") or "")
+        return not schedule.get("streams") and not str(
+            schedule.get("source_dynamic_id") or ""
+        )
 
     async def _can_parse_on_view(self, uid, week_start, event):
         """查看周表时能否顺手解析一次：本会话特别关注 + 查的是本周 + 有模型 + 没在扫。
@@ -483,16 +627,27 @@ class MyPlugin(Star):
         只有当前会话订阅且是特别关注的主播，才允许被动触发解析（查询纯数字 UID
         不会命中，避免任意 UID 都能烧模型 token）。
         """
-        if self.discovery is None or not getattr(self.discovery.parser, "provider_id", ""):
+        if self.discovery is None or not getattr(
+            self.discovery.parser, "provider_id", ""
+        ):
             return False
         today = china_today()
-        if week_start and week_start != (today - timedelta(days=today.weekday())).isoformat():
+        if (
+            week_start
+            and week_start != (today - timedelta(days=today.weekday())).isoformat()
+        ):
             return False
         is_scanning = getattr(self.discovery, "is_scanning", None)
-        if is_scanning(uid) if is_scanning else getattr(self.discovery, "scanning", False):
+        if (
+            is_scanning(uid)
+            if is_scanning
+            else getattr(self.discovery, "scanning", False)
+        ):
             return False
         try:
-            rows = await self.targets.data.get_target_mappings(event.unified_msg_origin, event.get_sender_id())
+            rows = await self.targets.data.get_target_mappings(
+                event.unified_msg_origin, event.get_sender_id()
+            )
         except Exception:
             return False
         row = next((item for item in rows if item["uid"] == uid), None)
@@ -512,7 +667,9 @@ class MyPlugin(Star):
         别名是给命令用的，图上展示原名更好认人，所以这里不优先取别名。
         """
         try:
-            rows = await self.targets.data.get_target_mappings(event.unified_msg_origin, event.get_sender_id())
+            rows = await self.targets.data.get_target_mappings(
+                event.unified_msg_origin, event.get_sender_id()
+            )
             row = next((item for item in rows if item["uid"] == uid), None)
         except Exception:
             return f"UID {uid}"
@@ -534,7 +691,11 @@ class MyPlugin(Star):
             except Exception:
                 logger.warning("Adjustment notice image download failed uid=%s", uid)
                 continue
-            paths.append(await self.discovery.data.save_notice_image(uid, f"{dynamic_id}-{index}", raw))
+            paths.append(
+                await self.discovery.data.save_notice_image(
+                    uid, f"{dynamic_id}-{index}", raw
+                )
+            )
         if paths:
             return paths
         raw = await self.screenshot.capture(post, self.bili.browser_cookies())
@@ -546,26 +707,40 @@ class MyPlugin(Star):
         try:
             uid = await self._resolve_target(event, uid)
             weeks = await self.schedules.get_schedule_history(uid)
-            text = "\n".join(f"- {w['week_start']}（{w['versions']} 个存档版本）" for w in weeks)
-            yield markdown_reply(event, f"**已缓存的周表**\n{text}" if text else "暂无历史周表缓存。")
+            text = "\n".join(
+                f"- {w['week_start']}（{w['versions']} 个存档版本）" for w in weeks
+            )
+            yield markdown_reply(
+                event, f"**已缓存的周表**\n{text}" if text else "暂无历史周表缓存。"
+            )
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
     @filter.command("vt_adjust_test")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def vt_adjust_test(self, event: AstrMessageEvent, uid: str = "", *, text: GreedyStr):
+    async def vt_adjust_test(
+        self, event: AstrMessageEvent, uid: str = "", *, text: GreedyStr
+    ):
         """管理员调播预演：/vt_adjust_test <UID或别名> <动态正文>，不保存、不推送。"""
         if not event.is_admin():
             yield event.plain_result("仅管理员可以调用调播模型测试。")
             return
         if not uid or not text:
-            yield event.plain_result("用法：/vt_adjust_test <UID或别名> <动态正文>（仅预演，不修改周表）")
+            yield event.plain_result(
+                "用法：/vt_adjust_test <UID或别名> <动态正文>（仅预演，不修改周表）"
+            )
             return
         try:
             uid = await self._resolve_target(event, uid)
-            result = await self.adjustment.process(DynamicPost(uid, str(time.time_ns()), text, int(time.time())), dry_run=True)
-            yield markdown_reply(event, "**调播预演**（未保存、未推送）\n\n"
-                                 + (format_diff(result["changes"]) or result["reason"]))
+            result = await self.adjustment.process(
+                DynamicPost(uid, str(time.time_ns()), text, int(time.time())),
+                dry_run=True,
+            )
+            yield markdown_reply(
+                event,
+                "**调播预演**（未保存、未推送）\n\n"
+                + (format_diff(result["changes"]) or result["reason"]),
+            )
         except ValueError as exc:
             yield event.plain_result(str(exc))
         except Exception:
@@ -582,14 +757,18 @@ class MyPlugin(Star):
                 f"### #{r['id']} · {local_time(r['created_at'])}\n"
                 f"**来源**：{'https://t.bilibili.com/' + r['source_dynamic_id'] if r['source_dynamic_id'] else '手动'}\n"
                 f"**依据**：{(r['reason'] or '').strip()[:200]}\n\n"
-                + format_diff(schedule_diff(r['old_value'], r['new_value'])) for r in rows)
+                + format_diff(schedule_diff(r["old_value"], r["new_value"]))
+                for r in rows
+            )
             yield markdown_reply(event, text[:10000] or "暂无周表修订记录。")
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
     @filter.command("vt_retry_adjust")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def vt_retry_adjust(self, event: AstrMessageEvent, uid: str = "", dynamic_id: str = ""):
+    async def vt_retry_adjust(
+        self, event: AstrMessageEvent, uid: str = "", dynamic_id: str = ""
+    ):
         """管理员修复模型/周表后，重试一条已失败的调播动态。"""
         if not event.is_admin():
             yield event.plain_result("仅管理员可以重试调播任务。")
@@ -600,7 +779,11 @@ class MyPlugin(Star):
         try:
             uid = await self._resolve_target(event, uid)
             changed = await self.schedules.retry_adjustment(uid, dynamic_id)
-            yield event.plain_result("已排入重试队列，配置模型并拥有本周周表后会处理。" if changed else "未找到对应的失败任务。")
+            yield event.plain_result(
+                "已排入重试队列，配置模型并拥有本周周表后会处理。"
+                if changed
+                else "未找到对应的失败任务。"
+            )
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
@@ -608,7 +791,9 @@ class MyPlugin(Star):
     async def vt_list(self, event: AstrMessageEvent):
         """列出当前会话的订阅。"""
         try:
-            text = await self.targets.format_list(event.unified_msg_origin, event.get_sender_id())
+            text = await self.targets.format_list(
+                event.unified_msg_origin, event.get_sender_id()
+            )
         except Exception:
             logger.exception("VTuber list failed")
             text = "读取订阅失败，请检查插件日志。"
@@ -642,15 +827,23 @@ class MyPlugin(Star):
         listener = self.live_listener
         if self.bili is None:
             # 初始化没跑完时没有任何子系统可报告。
-            yield event.plain_result("插件尚未初始化完成，暂无状态可报；若持续如此请查看插件日志。")
+            yield event.plain_result(
+                "插件尚未初始化完成，暂无状态可报；若持续如此请查看插件日志。"
+            )
             return
-        running = listener is not None and self.live_listener_task is not None and not self.live_listener_task.done()
+        running = (
+            listener is not None
+            and self.live_listener_task is not None
+            and not self.live_listener_task.done()
+        )
         work = await self.targets.data.get_work_status()
         watch_errors = []
         for uid in await self.targets.data.get_subscribed_uids():
             tracked = await self.targets.data.get_schedule_tracking(uid)
             if tracked and tracked.get("error"):
-                watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
+                watch_errors.append(
+                    f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}"
+                )
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
         # 输出按 markdown 组织：QQ 官方机器人会渲染成带样式的卡片，其余平台读起来也是普通文本。
         metadata = self.context.get_registered_star(PLUGIN_NAME)
@@ -669,20 +862,25 @@ class MyPlugin(Star):
             ]
         counts = [f"监听错误：{listener.failures}"] if listener is not None else []
         if self.dispatcher is not None:
-            counts.append(f"发送成功：{self.dispatcher.sent}；发送失败：{self.dispatcher.failed}")
+            counts.append(
+                f"发送成功：{self.dispatcher.sent}；发送失败：{self.dispatcher.failed}"
+            )
         lines.append(("- " + "；".join(counts)) if counts else "- 发送计数：未初始化")
         lines.append("")
         if self.dispatcher is not None:
             lines.append(await self._notification_line())
         if self.bili is not None:
-            lines.append(f"**登录凭据**：{'已保存扫码凭据' if self.bili.has_credentials else '未登录（管理员私聊执行 /bili_login 扫码）'}")
+            lines.append(
+                f"**登录凭据**：{'已保存扫码凭据' if self.bili.has_credentials else '未登录（管理员私聊执行 /bili_login 扫码）'}"
+            )
         if self.dynamic_listener is None:
             lines.append("**动态监听**：未初始化")
         else:
             lines.append(
                 f"**动态监听**：{'运行中' if self.dynamic_listener_task and not self.dynamic_listener_task.done() else '未运行'}"
                 f"；完成 {self.dynamic_listener.rounds} 轮，采集 {self.dynamic_listener.received} 条，失败 {self.dynamic_listener.failures} 次"
-                f"；最近成功 {local_time(self.dynamic_listener.last_success_at)}")
+                f"；最近成功 {local_time(self.dynamic_listener.last_success_at)}"
+            )
             if self.dynamic_listener.last_error:
                 lines.append(f"- 最近采集错误：{self.dynamic_listener.last_error}")
         if self.discovery is None:
@@ -701,34 +899,48 @@ class MyPlugin(Star):
             lines.append(
                 f"**周表扫描时间**：{'、'.join(item.strftime('%H:%M') for item in self.schedule_watch.scan_times) or '未设置（已关闭）'}"
                 f"；普通关注自动解析：{'开启' if self.schedule_watch.auto_parse_normal else '关闭'}"
-                f"；视觉模型：{model_state}")
+                f"；视觉模型：{model_state}"
+            )
             if parser.last_error:
                 lines.append(f"- 最近识别错误：{parser.last_error}")
-        lines.append(f"**定时扫描**：{'运行中（特别关注自动解析）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}")
-        lines.append(f"**空间资料**：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}")
+        lines.append(
+            f"**定时扫描**：{'运行中（特别关注自动解析）' if self.schedule_watch_task and not self.schedule_watch_task.done() else '关闭'}"
+        )
+        lines.append(
+            f"**空间资料**：{'每天零点刷新' if self.profile_task and not self.profile_task.done() else '未运行'}"
+        )
         if self.dynamic_listener is not None and self.adjustment is not None:
             lines.append(
                 f"**自动调播**：{'有本周周表时自动处理' if self.dynamic_listener.adjustment else '关闭'}"
-                f"；模型：{'已指定' if self.adjustment.provider_id else '未指定'}")
+                f"；模型：{'已指定' if self.adjustment.provider_id else '未指定'}"
+            )
         if self.dispatcher is not None:
             lines.append(
                 f"**周表推送**：{'开启' if self.dispatcher.schedule_enabled else '关闭'}"
                 f"；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}"
                 f"；发送任务：{'运行中' if self.notification_task and not self.notification_task.done() else '未运行'}"
-                f"；最近平台发送成功：{local_time(self.dispatcher.last_success_at)}")
+                f"；最近平台发送成功：{local_time(self.dispatcher.last_success_at)}"
+            )
             if self.dispatcher.last_error:
                 lines.append(f"- 最近队列错误：{self.dispatcher.last_error}")
-        for name, table in (("调播任务", "adjustment_jobs"), ("通知任务", "schedule_outbox")):
+        for name, table in (
+            ("调播任务", "adjustment_jobs"),
+            ("通知任务", "schedule_outbox"),
+        ):
             counts = work[table]
             oldest = work["oldest_pending"][table]
-            value = (f"待处理 {counts.get('pending', 0)}、已完成 {counts.get('done', 0)}、"
-                     f"失败 {counts.get('failed', 0)}")
+            value = (
+                f"待处理 {counts.get('pending', 0)}、已完成 {counts.get('done', 0)}、"
+                f"失败 {counts.get('failed', 0)}"
+            )
             if table == "schedule_outbox":
                 value += f"、部分发送 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
             else:
                 value += f"、已过期 {counts.get('expired', 0)}"
             if counts.get("pending"):
-                value += f"；最早入队 {local_time(oldest) if oldest else '旧记录未留时间'}"
+                value += (
+                    f"；最早入队 {local_time(oldest) if oldest else '旧记录未留时间'}"
+                )
             lines.append(f"- {name}：{value}")
             if error := work["latest_errors"][table]:
                 lines.append(f"  最近错误：{error}")
@@ -736,7 +948,8 @@ class MyPlugin(Star):
             f"**实际直播**：待落位 {work['live_sessions']['pending']} 场"
             f"；未记录 {work['live_sessions']['skipped']} 场（起点未知）"
             f"；已记录 {work['live_sessions']['recorded']} 场"
-            f"；无效 {work['live_sessions']['invalid']} 场（短于 {self.live_recorder.min_live_duration.total_seconds() / 60:g} 分钟）")
+            f"；无效 {work['live_sessions']['invalid']} 场（短于 {self.live_recorder.min_live_duration.total_seconds() / 60:g} 分钟）"
+        )
         if watch_errors:
             lines += ["", "**周表检查待处理**"]
             for item in watch_errors[:5]:
@@ -753,11 +966,20 @@ class MyPlugin(Star):
         继续用旧配置发通知（重载后"旧实例还在发下播"就是这么来的）。现在每一步都
         各自兜住异常，保证任务一定被取消。
         """
-        tasks = [task for task in (self.live_listener_task, self.dynamic_listener_task,
-                                   self.schedule_watch_task, self.profile_task,
-                                   self.notification_task, self.live_reconciliation_task, self.adjustment_task,
-                                   self.retention_task)
-                 if task is not None]
+        tasks = [
+            task
+            for task in (
+                self.live_listener_task,
+                self.dynamic_listener_task,
+                self.schedule_watch_task,
+                self.profile_task,
+                self.notification_task,
+                self.live_reconciliation_task,
+                self.adjustment_task,
+                self.retention_task,
+            )
+            if task is not None
+        ]
         for task in tasks:
             task.cancel()
         self.live_listener_task = None
@@ -773,7 +995,11 @@ class MyPlugin(Star):
                 await asyncio.gather(*tasks, return_exceptions=True)
             except Exception:
                 logger.warning("VTuber monitor background tasks did not stop cleanly")
-        for label, service in (("subscriptions", self.subscriptions), ("pinned", self.pinned), ("login", self.login)):
+        for label, service in (
+            ("subscriptions", self.subscriptions),
+            ("pinned", self.pinned),
+            ("login", self.login),
+        ):
             if service is None:
                 continue
             try:

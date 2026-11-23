@@ -1,4 +1,5 @@
 """定时扫描：时间点调度、扫描范围、基准建立与更新落位。"""
+
 import asyncio
 from dataclasses import replace
 from datetime import datetime, time, timedelta
@@ -9,11 +10,25 @@ import pytest
 
 from astrbot_plugin_vtuber_monitor.bili_client import BiliError
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
-from astrbot_plugin_vtuber_monitor.core.models import DynamicPost, FollowLevel, VtuberState
-from astrbot_plugin_vtuber_monitor.core.schedule_models import china_today, schedule_from_parser
+from astrbot_plugin_vtuber_monitor.core.models import (
+    DynamicPost,
+    FollowLevel,
+    VtuberState,
+)
+from astrbot_plugin_vtuber_monitor.core.schedule_models import (
+    china_today,
+    schedule_from_parser,
+)
 from astrbot_plugin_vtuber_monitor.services.schedule_service import ScheduleService
 from astrbot_plugin_vtuber_monitor.services.schedule_watch import (
-    CHINA, ScheduleWatch, latest_due_slot, monday, next_scan_at, parse_scan_times, remember_schedule)
+    CHINA,
+    ScheduleWatch,
+    latest_due_slot,
+    monday,
+    next_scan_at,
+    parse_scan_times,
+    remember_schedule,
+)
 
 TIMES = ["00:30", "12:30", "20:30"]
 URL = "https://i0.hdslb.com/week.png"
@@ -23,36 +38,63 @@ def at(day, clock):
     hour, minute = (int(part) for part in clock.split(":"))
     return datetime.combine(day, time(hour, minute), CHINA)
 
+
 def make_watch(discovery, **options):
-    return ScheduleWatch(discovery.data, discovery.bili, discovery.parser, discovery.schedules,
-                         bootstrap=lambda uid: discovery.scan(uid), is_candidate=discovery.is_candidate,
-                         lock_for=lambda uid: discovery._lock, **options)
+    return ScheduleWatch(
+        discovery.data,
+        discovery.bili,
+        discovery.parser,
+        discovery.schedules,
+        bootstrap=lambda uid: discovery.scan(uid),
+        is_candidate=discovery.is_candidate,
+        lock_for=lambda uid: discovery._lock,
+        **options,
+    )
 
 
-async def setup(tmp_path, *, offset=-1, remember=True, times=TIMES, auto_parse_normal=False):
+async def setup(
+    tmp_path, *, offset=-1, remember=True, times=TIMES, auto_parse_normal=False
+):
     data = DataManager(tmp_path)
     await data.initialize()
     start = monday(china_today()) + timedelta(weeks=offset)
     post = DynamicPost(1, "100", "周表", 1, (URL,), True)
 
     def parsed(week, title="直播"):
-        payload = {"week_start": week.isoformat(),
-                   "streams": [{"date": week.isoformat(), "start_time": "20:00", "title": title}]}
-        return replace(schedule_from_parser(1, payload, allow_history=True),
-                       source_dynamic_id="100", source_image_url=URL)
+        payload = {
+            "week_start": week.isoformat(),
+            "streams": [
+                {"date": week.isoformat(), "start_time": "20:00", "title": title}
+            ],
+        }
+        return replace(
+            schedule_from_parser(1, payload, allow_history=True),
+            source_dynamic_id="100",
+            source_image_url=URL,
+        )
 
     parser = SimpleNamespace(
         provider_id="vision",
         parse=AsyncMock(return_value=parsed(start + timedelta(days=7))),
-        is_schedule_image=AsyncMock(return_value=True))
-    bili = SimpleNamespace(get_latest_dynamics=AsyncMock(return_value=[post]),
-                           download_image=AsyncMock(return_value=b"\x89PNGnew"))
+        is_schedule_image=AsyncMock(return_value=True),
+    )
+    bili = SimpleNamespace(
+        get_latest_dynamics=AsyncMock(return_value=[post]),
+        download_image=AsyncMock(return_value=b"\x89PNGnew"),
+    )
     service = ScheduleService(data)
     discovery = SimpleNamespace(
-        data=data, parser=parser, bili=bili, schedules=service, _lock=asyncio.Lock(),
-        is_candidate=lambda item: bool(item.images) and (item.is_pinned or "周表" in item.text),
+        data=data,
+        parser=parser,
+        bili=bili,
+        schedules=service,
+        _lock=asyncio.Lock(),
+        is_candidate=lambda item: (
+            bool(item.images) and (item.is_pinned or "周表" in item.text)
+        ),
         scan=AsyncMock(),
-        prune_images=AsyncMock(return_value={"images": 0, "scratch": 0, "freed": 0}))
+        prune_images=AsyncMock(return_value={"images": 0, "scratch": 0, "freed": 0}),
+    )
     watch = make_watch(discovery, scan_times=times, auto_parse_normal=auto_parse_normal)
     initial = parsed(start)
     await service.store_parsed_schedule(initial)
@@ -69,16 +111,32 @@ def test_scan_times_and_slots():
         with pytest.raises(ValueError):
             parse_scan_times([bad])
     assert latest_due_slot(at(china_today(), "00:10"), times) is None
-    assert latest_due_slot(at(china_today(), "13:00"), times) == f"{china_today().isoformat()}T12:30"
+    assert (
+        latest_due_slot(at(china_today(), "13:00"), times)
+        == f"{china_today().isoformat()}T12:30"
+    )
     assert next_scan_at(at(china_today(), "13:00"), times) == at(china_today(), "20:30")
-    assert next_scan_at(at(china_today(), "23:00"), times) == at(china_today() + timedelta(days=1), "00:30")
+    assert next_scan_at(at(china_today(), "23:00"), times) == at(
+        china_today() + timedelta(days=1), "00:30"
+    )
     assert next_scan_at(at(china_today(), "13:00"), ()) is None
 
 
 def test_select_posts_keeps_pinned_first_and_limits_recent():
-    watch = ScheduleWatch(None, None, None, None, bootstrap=None, lock_for=None,
-                          is_candidate=lambda item: bool(item.images), scan_times=TIMES)
-    posts = [DynamicPost(1, str(index), "x", index, (URL,), index == 3) for index in range(1, 10)]
+    watch = ScheduleWatch(
+        None,
+        None,
+        None,
+        None,
+        bootstrap=None,
+        lock_for=None,
+        is_candidate=lambda item: bool(item.images),
+        scan_times=TIMES,
+    )
+    posts = [
+        DynamicPost(1, str(index), "x", index, (URL,), index == 3)
+        for index in range(1, 10)
+    ]
     selected = watch.select_posts(posts)
     assert [item.id for item in selected] == ["3", "9", "8", "7", "6"]
 
@@ -119,7 +177,9 @@ async def test_changed_image_advances_the_week(tmp_path):
     await watch.check(1, now=at(start, "12:45"))
     # 上周周表发现新图 → 落位到下一周（本周）。
     expected = (start + timedelta(days=7)).isoformat()
-    assert expected in d.parser.parse.await_args.kwargs["update_context"]["allowed_weeks"]
+    assert (
+        expected in d.parser.parse.await_args.kwargs["update_context"]["allowed_weeks"]
+    )
     state = await d.data.get_schedule_tracking(1)
     assert state["week"] == expected and state["pending"] is None
     assert await d.data.get_historical_schedule(1, expected)
@@ -144,10 +204,12 @@ async def test_second_change_in_the_same_week_uses_update_context(tmp_path):
 async def test_watch_creates_a_blank_week_container_for_special_follows(tmp_path):
     """新的一周周表还没出来时，定时扫描先放一张空白容器，直播才有地方落位。"""
     watch, d, start, _ = await setup(tmp_path)
-    await d.data.add_subscription(VtuberState(1, "主播", 10, False), "umo", FollowLevel.SPECIAL, [])
+    await d.data.add_subscription(
+        VtuberState(1, "主播", 10, False), "umo", FollowLevel.SPECIAL, []
+    )
     current = monday(china_today())
     assert await d.data.get_historical_schedule(1, current.isoformat()) is None
-    d.parser.is_schedule_image.return_value = False      # 这一轮没找到真周表
+    d.parser.is_schedule_image.return_value = False  # 这一轮没找到真周表
     await watch.run_once(now=at(current, "12:45"))
     schedule = await d.data.get_historical_schedule(1, current.isoformat())
     assert schedule is not None and schedule["streams"] == []
@@ -175,11 +237,15 @@ async def test_unconfirmable_image_gives_up_after_a_few_attempts(tmp_path):
     d.parser.parse.side_effect = None
     d.parser.parse.return_value = make(start + timedelta(days=7))
     d.bili.get_latest_dynamics.return_value = [
-        DynamicPost(1, "101", "周表", 2, ("https://i0.hdslb.com/later.png",), False)]
+        DynamicPost(1, "101", "周表", 2, ("https://i0.hdslb.com/later.png",), False)
+    ]
     d.bili.download_image.return_value = b"\x89PNGlater"
     await watch.check(1, now=at(start, "12:45"))
     state = await d.data.get_schedule_tracking(1)
-    assert state["error"] == "" and state["week"] == (start + timedelta(days=7)).isoformat()
+    assert (
+        state["error"] == ""
+        and state["week"] == (start + timedelta(days=7)).isoformat()
+    )
 
 
 @pytest.mark.asyncio
@@ -199,9 +265,16 @@ async def test_failed_parse_keeps_baseline_and_retries_next_slot(tmp_path):
 @pytest.mark.asyncio
 async def test_non_schedule_image_is_classified_once(tmp_path):
     watch, d, day, _ = await setup(tmp_path)
-    other = DynamicPost(1, "101", "周表补充", 2, ("https://i0.hdslb.com/art.png",), False)
-    d.bili.get_latest_dynamics.return_value = [d.bili.get_latest_dynamics.return_value[0], other]
-    d.bili.download_image.side_effect = lambda url: b"\x89PNGold" if url == URL else b"\x89PNGart"
+    other = DynamicPost(
+        1, "101", "周表补充", 2, ("https://i0.hdslb.com/art.png",), False
+    )
+    d.bili.get_latest_dynamics.return_value = [
+        d.bili.get_latest_dynamics.return_value[0],
+        other,
+    ]
+    d.bili.download_image.side_effect = lambda url: (
+        b"\x89PNGold" if url == URL else b"\x89PNGart"
+    )
     d.parser.is_schedule_image.return_value = False
     await watch.check(1, now=at(day, "12:45"))
     assert d.parser.is_schedule_image.await_count == 1
@@ -217,9 +290,16 @@ async def test_non_schedule_image_is_classified_once(tmp_path):
 @pytest.mark.asyncio
 async def test_new_weekly_image_in_a_recent_post_is_adopted(tmp_path):
     watch, d, day, _ = await setup(tmp_path)
-    fresh = DynamicPost(1, "102", "本周周表", 3, ("https://i0.hdslb.com/new-week.png",), False)
-    d.bili.get_latest_dynamics.return_value = [d.bili.get_latest_dynamics.return_value[0], fresh]
-    d.bili.download_image.side_effect = lambda url: b"\x89PNGold" if url == URL else b"\x89PNGweek"
+    fresh = DynamicPost(
+        1, "102", "本周周表", 3, ("https://i0.hdslb.com/new-week.png",), False
+    )
+    d.bili.get_latest_dynamics.return_value = [
+        d.bili.get_latest_dynamics.return_value[0],
+        fresh,
+    ]
+    d.bili.download_image.side_effect = lambda url: (
+        b"\x89PNGold" if url == URL else b"\x89PNGweek"
+    )
     await watch.check(1, now=at(day, "12:45"))
     state = await d.data.get_schedule_tracking(1)
     assert state["dynamic_id"] == "102" and state["image_url"].endswith("new-week.png")
@@ -231,9 +311,14 @@ async def test_bad_candidate_does_not_block_new_week_after_gap(tmp_path):
     current = monday(china_today())
     end = current + timedelta(days=6)
     source = f"{current.month}/{current.day}-{end.month}/{end.day} 周表"
-    post = DynamicPost(1, "102", source, 2, ("https://i0.hdslb.com/missing.png", URL), True)
+    post = DynamicPost(
+        1, "102", source, 2, ("https://i0.hdslb.com/missing.png", URL), True
+    )
     fixture.bili.get_latest_dynamics.return_value = [post]
-    fixture.bili.download_image.side_effect = [BiliError("图片 HTTP 错误（503）"), b"new image"]
+    fixture.bili.download_image.side_effect = [
+        BiliError("图片 HTTP 错误（503）"),
+        b"new image",
+    ]
     fixture.parser.parse.return_value = make(current)
     await watch.check(1, now=at(current, "12:45"))
     assert fixture.bili.download_image.await_count == 2
@@ -244,7 +329,10 @@ async def test_bad_candidate_does_not_block_new_week_after_gap(tmp_path):
 @pytest.mark.asyncio
 async def test_download_failure_is_retried_in_the_same_slot(tmp_path):
     watch, fixture, start, _ = await setup(tmp_path)
-    fixture.bili.download_image.side_effect = [BiliError("图片 HTTP 错误（503）"), b"new image"]
+    fixture.bili.download_image.side_effect = [
+        BiliError("图片 HTTP 错误（503）"),
+        b"new image",
+    ]
     assert await watch.check(1, now=at(start, "12:45"))
     assert await watch.check(1, now=at(start, "12:45"))
     assert fixture.bili.download_image.await_count == 1
@@ -259,7 +347,12 @@ async def test_run_once_covers_specials_and_only_manually_parsed_normals(tmp_pat
     await d.data.add_subscription(VtuberState(2, "普通", 11), "a")
     await d.data.add_subscription(VtuberState(3, "已解析", 12), "a")
     # 3 号是普通关注，但手动解析过（有基准）→ 也要检查。
-    await remember_schedule(d.data, DynamicPost(3, "300", "周表", 1, (URL,), True), parsed(start), b"\x89PNGold")
+    await remember_schedule(
+        d.data,
+        DynamicPost(3, "300", "周表", 1, (URL,), True),
+        parsed(start),
+        b"\x89PNGold",
+    )
     d.scan = AsyncMock()
     d.bili.get_latest_dynamics = AsyncMock(return_value=[])
     await watch.run_once(now=at(start, "12:45"))

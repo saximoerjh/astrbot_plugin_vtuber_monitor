@@ -1,4 +1,5 @@
 """挑一个此刻正处于 04:00–05:00 的国家或地区，交给模型造句。"""
+
 import asyncio
 import json
 import random
@@ -18,12 +19,20 @@ SYSTEM_PROMPT = (
     "不超过二十个字。必须包含给定的国家或地区名字，国家或地区名字太长的话支持使用简称，以及“凌晨四点”这个说法，"
     "可以按下面的例子自由选择措辞和语气。"
 )
-EXAMPLES = ("现在是马里凌晨四点半左右。",
-            "现在是英国的凌晨四点多哦。",
-            "现在是安提瓜和巴布达的凌晨四点。",
-            "现在是阿拉斯加的凌晨四点多哦。")
+EXAMPLES = (
+    "现在是马里凌晨四点半左右。",
+    "现在是英国的凌晨四点多哦。",
+    "现在是安提瓜和巴布达的凌晨四点。",
+    "现在是阿拉斯加的凌晨四点多哦。",
+)
 # 前缀问候的整点分界；最后一档跨过零点。
-GREETING_BANDS = ((5, "早上好"), (11, "中午好"), (13, "下午好"), (18, "晚上好"), (21, "晚安"))
+GREETING_BANDS = (
+    (5, "早上好"),
+    (11, "中午好"),
+    (13, "下午好"),
+    (18, "晚上好"),
+    (21, "晚安"),
+)
 
 
 def greeting_for(hour):
@@ -54,10 +63,14 @@ def nearest_to_four(moment):
     for label, zone in COUNTRIES:
         local_now = local_time(zone, moment)
         minutes = local_now.hour * 60 + local_now.minute
-        distance = min(abs(minutes - WINDOW_START * 60), 1440 - abs(minutes - WINDOW_START * 60))
+        distance = min(
+            abs(minutes - WINDOW_START * 60), 1440 - abs(minutes - WINDOW_START * 60)
+        )
         scored.append((distance, label, local_now))
     best = min(distance for distance, _, _ in scored)
-    return [(label, local_now) for distance, label, local_now in scored if distance == best]
+    return [
+        (label, local_now) for distance, label, local_now in scored if distance == best
+    ]
 
 
 def clean_sentence(text):
@@ -88,21 +101,38 @@ class GreetingService:
     async def _pick(self, pool):
         """随机抽选，避开最近用过的对象，同时保证候选池不会抽空。"""
         labels = {label for label, _ in pool}
-        recent = [row for row in await self.data.recent_greetings(RECENT_LIMIT) if row in labels]
-        blocked = set(recent[:max(0, len(pool) - 1)])
+        recent = [
+            row
+            for row in await self.data.recent_greetings(RECENT_LIMIT)
+            if row in labels
+        ]
+        blocked = set(recent[: max(0, len(pool) - 1)])
         return random.choice([entry for entry in pool if entry[0] not in blocked])
 
     async def _sentence(self, label, local_now):
         if not self.provider_id:
             return FALLBACK.format(label=label)
-        prompt = json.dumps({"国家或地区": label, "当地时间": local_now.strftime("%H:%M"),
-                             "参考例句": list(EXAMPLES)}, ensure_ascii=False)
+        prompt = json.dumps(
+            {
+                "国家或地区": label,
+                "当地时间": local_now.strftime("%H:%M"),
+                "参考例句": list(EXAMPLES),
+            },
+            ensure_ascii=False,
+        )
         try:
             response = await asyncio.wait_for(
-                self.context.llm_generate(chat_provider_id=self.provider_id, prompt=prompt,
-                                          system_prompt=SYSTEM_PROMPT), self.timeout)
+                self.context.llm_generate(
+                    chat_provider_id=self.provider_id,
+                    prompt=prompt,
+                    system_prompt=SYSTEM_PROMPT,
+                ),
+                self.timeout,
+            )
         except Exception:
             # 模型超时或不可用时，问候仍然要发得出去。
             logger.warning("Greeting model call failed")
             return FALLBACK.format(label=label)
-        return clean_sentence(getattr(response, "completion_text", "")) or FALLBACK.format(label=label)
+        return clean_sentence(
+            getattr(response, "completion_text", "")
+        ) or FALLBACK.format(label=label)

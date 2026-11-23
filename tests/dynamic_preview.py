@@ -9,6 +9,7 @@
 --list 列出该主播取到的动态（配合 --index 复现 /vt_latest 取的那一条），
 截图前会跑与生产一致的完整性检查，失败时打印同样的原因。
 """
+
 import asyncio
 import struct
 import sys
@@ -20,8 +21,15 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 from astrbot_plugin_vtuber_monitor.services.pinned_screenshot import (  # noqa: E402
-    DEVICE_SCALE, FONT_SCALE, MAX_PIXEL_HEIGHT, VIEWPORT_WIDTH, ScreenshotError,
-    card_script, card_style, text_matches)
+    DEVICE_SCALE,
+    FONT_SCALE,
+    MAX_PIXEL_HEIGHT,
+    VIEWPORT_WIDTH,
+    ScreenshotError,
+    card_script,
+    card_style,
+    text_matches,
+)
 
 
 async def load_posts(uid, latest):
@@ -48,30 +56,61 @@ async def load_posts(uid, latest):
     return bili, posts, default
 
 
-async def capture(bili, post, path, *, width=VIEWPORT_WIDTH, scale=DEVICE_SCALE,
-                  font_scale=FONT_SCALE, height=900, crop=None):
+async def capture(
+    bili,
+    post,
+    path,
+    *,
+    width=VIEWPORT_WIDTH,
+    scale=DEVICE_SCALE,
+    font_scale=FONT_SCALE,
+    height=900,
+    crop=None,
+):
     """按给定参数截图，并返回卡片几何信息。"""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
-        channel = "chromium" if Path(playwright.chromium.executable_path).exists() or sys.platform != "win32" else "msedge"
+        channel = (
+            "chromium"
+            if Path(playwright.chromium.executable_path).exists()
+            or sys.platform != "win32"
+            else "msedge"
+        )
         browser = await playwright.chromium.launch(channel=channel, headless=True)
         try:
-            context = await browser.new_context(viewport={"width": width, "height": height},
-                                                device_scale_factor=scale, locale="zh-CN", service_workers="block")
+            context = await browser.new_context(
+                viewport={"width": width, "height": height},
+                device_scale_factor=scale,
+                locale="zh-CN",
+                service_workers="block",
+            )
             await context.add_cookies(bili.browser_cookies())
 
             async def route_request(route):
                 parts = urlsplit(route.request.url)
                 host = parts.hostname or ""
-                allowed = any(host == domain or host.endswith("." + domain)
-                              for domain in ("bilibili.com", "hdslb.com", "biliapi.net", "bilivideo.com"))
-                await route.continue_() if parts.scheme == "https" and allowed else await route.abort()
+                allowed = any(
+                    host == domain or host.endswith("." + domain)
+                    for domain in (
+                        "bilibili.com",
+                        "hdslb.com",
+                        "biliapi.net",
+                        "bilivideo.com",
+                    )
+                )
+                await (
+                    route.continue_()
+                ) if parts.scheme == "https" and allowed else await route.abort()
 
             await context.route("**/*", route_request)
             page = await context.new_page()
             page.set_default_timeout(20000)
-            await page.goto(f"https://t.bilibili.com/{post.id}", wait_until="domcontentloaded", timeout=30000)
+            await page.goto(
+                f"https://t.bilibili.com/{post.id}",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
             card = page.locator(".bili-dyn-item, .opus-detail").first
             await card.wait_for(state="visible")
             await page.add_style_tag(content=card_style())
@@ -111,14 +150,19 @@ async def capture(bili, post, path, *, width=VIEWPORT_WIDTH, scale=DEVICE_SCALE,
             # 与生产一致的完整性检查：正文不一致、图片没加载完、过长都直接失败。
             text = "".join((await card.inner_text()).split())
             if not text_matches(post.text, text):
-                raise ScreenshotError("页面正文与接口动态不一致"
-                                      f"（接口 {post.text[:40]!r} / 页面 {text[:40]!r}）")
+                raise ScreenshotError(
+                    "页面正文与接口动态不一致"
+                    f"（接口 {post.text[:40]!r} / 页面 {text[:40]!r}）"
+                )
             if not box or box["height"] * scale > MAX_PIXEL_HEIGHT:
                 raise ScreenshotError("动态过长，无法生成完整截图。")
             if await card.locator("img:visible").evaluate_all(
-                    "els => els.some(img => !img.complete || !img.naturalWidth)"):
+                "els => els.some(img => !img.complete || !img.naturalWidth)"
+            ):
                 raise ScreenshotError("动态页面图片未完整加载，未发送残缺截图。")
-            raw = await target.screenshot(type="png", animations="disabled", timeout=20000)
+            raw = await target.screenshot(
+                type="png", animations="disabled", timeout=20000
+            )
             if len(raw) > 20 * 1024 * 1024:
                 raise ScreenshotError("动态完整截图超过 20 MiB。")
             Path(path).write_bytes(raw)
@@ -144,18 +188,28 @@ async def main():
     # Windows 控制台默认 GBK，动态里的 emoji 会让 print 直接抛错。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     flags, values, positional = parse_argv(sys.argv[1:])
-    output = Path(positional[0]).resolve() if positional else Path(tempfile.gettempdir()) / "vt-dynamic-preview"
+    output = (
+        Path(positional[0]).resolve()
+        if positional
+        else Path(tempfile.gettempdir()) / "vt-dynamic-preview"
+    )
     output.mkdir(parents=True, exist_ok=True)
-    bili, posts, default_index = await load_posts(values.get("--uid", ""), "--latest" in flags)
+    bili, posts, default_index = await load_posts(
+        values.get("--uid", ""), "--latest" in flags
+    )
     if "--list" in flags:
         for index, item in enumerate(posts):
-            print(f"[{index}] {item.id} 置顶={item.is_pinned} 图片={len(item.images)} "
-                  f"正文={len(item.text)}字 {item.text[:24]!r}")
+            print(
+                f"[{index}] {item.id} 置顶={item.is_pinned} 图片={len(item.images)} "
+                f"正文={len(item.text)}字 {item.text[:24]!r}"
+            )
         await bili.close()
         return 0
     index = int(values["--index"]) if values.get("--index") else default_index
     post = posts[index]
-    print(f"动态 [{index}] {post.id}  置顶={post.is_pinned} 图片={len(post.images)} 正文={len(post.text)}字")
+    print(
+        f"动态 [{index}] {post.id}  置顶={post.is_pinned} 图片={len(post.images)} 正文={len(post.text)}字"
+    )
     variants = [("default", {})]
     if "--variants" in flags:
         variants += [
@@ -173,9 +227,11 @@ async def main():
                 continue
             png_width, png_height = struct.unpack(">II", raw[16:24])
             font = geometry["font"] or 0
-            print(f"{name}: 卡片 {geometry['card']} 正文 {geometry['text']} 字号 {font:g} "
-                  f"-> {png_width}x{png_height}px {len(raw) // 1024}KiB "
-                  f"字号/宽度 = {font / box['width'] * 100:.2f}%")
+            print(
+                f"{name}: 卡片 {geometry['card']} 正文 {geometry['text']} 字号 {font:g} "
+                f"-> {png_width}x{png_height}px {len(raw) // 1024}KiB "
+                f"字号/宽度 = {font / box['width'] * 100:.2f}%"
+            )
     finally:
         await bili.close()
     print(f"输出目录：{output}")

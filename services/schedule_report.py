@@ -8,13 +8,22 @@ def format_schedule_report(records, uid, *, target="", week_start=""):
     lines = [f"**指定周次**：{week_start} 起"] if week_start else []
     needs_week = False
     for dynamic_id, items in groups.items():
-        accepted = next((r for r in items if r["status"] in ("parsed", "archived", "unchanged")), None)
+        accepted = next(
+            (r for r in items if r["status"] in ("parsed", "archived", "unchanged")),
+            None,
+        )
         if accepted:
-            summary = {"parsed": "周表已保存", "archived": "历史周表已缓存", "unchanged": "已有周表未变更"}[accepted["status"]]
+            summary = {
+                "parsed": "周表已保存",
+                "archived": "历史周表已缓存",
+                "unchanged": "已有周表未变更",
+            }[accepted["status"]]
             if accepted.get("week_start"):
                 summary += f"（{accepted['week_start']} 起）"
         elif any(r["status"] == "needs_date" for r in items):
-            summary = "周次不明确，未保存。" if not week_start else "日期信息仍不足，未保存。"
+            summary = (
+                "周次不明确，未保存。" if not week_start else "日期信息仍不足，未保存。"
+            )
             needs_week = not week_start
         elif any(r["status"] in ("pending", "stale") for r in items):
             summary = "未配置视觉模型，原图已保留。"
@@ -24,13 +33,21 @@ def format_schedule_report(records, uid, *, target="", week_start=""):
                 if record["status"] != "failed":
                     continue
                 code = record.get("error_code")
-                reason = {"model_error": "模型调用失败", "model_timeout": "模型请求超时",
-                          "model_unconfigured": "未选择多模态识别模型", "image_missing": "本地图片已丢失",
-                          "download_error": record.get("error_message") or "图片下载失败", "date_conflict": "日期冲突",
-                          "invalid_output": "模型结果无效", "unresolved": "未识别出有效周表"}.get(code)
+                reason = {
+                    "model_error": "模型调用失败",
+                    "model_timeout": "模型请求超时",
+                    "model_unconfigured": "未选择多模态识别模型",
+                    "image_missing": "本地图片已丢失",
+                    "download_error": record.get("error_message") or "图片下载失败",
+                    "date_conflict": "日期冲突",
+                    "invalid_output": "模型结果无效",
+                    "unresolved": "未识别出有效周表",
+                }.get(code)
                 reason = reason or {
-                    "download": "图片下载失败", "image_save": "本地图片保存失败",
-                    "image_read": "本地图片读取失败", "store": "周表入库失败",
+                    "download": "图片下载失败",
+                    "image_save": "本地图片保存失败",
+                    "image_read": "本地图片读取失败",
+                    "store": "周表入库失败",
                 }.get(record.get("error_stage"), "周表识别失败")
                 reason = reason.rstrip("。")
                 if reason not in reasons:
@@ -40,7 +57,11 @@ def format_schedule_report(records, uid, *, target="", week_start=""):
             summary = "未识别到周表。"
         lines.append(f"- {summary}\n  查看动态：https://t.bilibili.com/{dynamic_id}")
     if not groups:
-        lines.append(f"- 未发现周表候选。\n  查看动态页：https://space.bilibili.com/{uid}/dynamic")
+        lines.append(
+            f"- 未发现周表候选。\n  查看动态页：https://space.bilibili.com/{uid}/dynamic"
+        )
     if needs_week:
-        lines.append(f"确认周次后重试：/vt_parse_schedule {target or uid} 本周（也支持上周、下周或日期）")
+        lines.append(
+            f"确认周次后重试：/vt_parse_schedule {target or uid} 本周（也支持上周、下周或日期）"
+        )
     return "\n\n".join(lines)

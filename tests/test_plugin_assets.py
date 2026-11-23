@@ -1,4 +1,5 @@
 """WebUI 插件卡片固定读插件根目录的 logo.png，文件名在 star_manager 里写死。"""
+
 import struct
 from pathlib import Path
 

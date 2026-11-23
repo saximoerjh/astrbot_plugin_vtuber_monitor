@@ -10,7 +10,9 @@ from astrbot_plugin_vtuber_monitor.bili_client import BiliClient, BiliError
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost, VtuberState
 from astrbot_plugin_vtuber_monitor.services.dynamic_listener import DynamicListener
-from astrbot_plugin_vtuber_monitor.services.subscription_service import SubscriptionService
+from astrbot_plugin_vtuber_monitor.services.subscription_service import (
+    SubscriptionService,
+)
 
 
 def post(id, uid=1):
@@ -18,11 +20,18 @@ def post(id, uid=1):
 
 
 def item(id):
-    return {"id_str": str(id), "modules": {
-        "module_author": {"mid": 1, "pub_ts": 1700000000},
-        "module_dynamic": {"desc": {"text": "本周安排"},
-                           "major": {"draw": {"items": [{"src": "https://i0.hdslb.com/test.jpg"}]}}}
-    }}
+    return {
+        "id_str": str(id),
+        "modules": {
+            "module_author": {"mid": 1, "pub_ts": 1700000000},
+            "module_dynamic": {
+                "desc": {"text": "本周安排"},
+                "major": {
+                    "draw": {"items": [{"src": "https://i0.hdslb.com/test.jpg"}]}
+                },
+            },
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -33,7 +42,10 @@ async def test_dynamic_api_cookie_order_and_forward():
         assert request.headers["cookie"] == "SESSDATA=fake-test-secret"
         forwarded = item(2)
         forwarded["orig"] = {"text": "不应读取原作者的调播信息"}
-        return httpx.Response(200, json={"code": 0, "data": {"items": [forwarded, item(1), item(2)]}})
+        return httpx.Response(
+            200, json={"code": 0, "data": {"items": [forwarded, item(1), item(2)]}}
+        )
+
     client = BiliClient(transport=httpx.MockTransport(handler))
     client.set_credentials({"SESSDATA": "fake-test-secret"})
     try:
@@ -41,15 +53,26 @@ async def test_dynamic_api_cookie_order_and_forward():
         assert [p.id for p in posts] == ["1", "2"]
         assert posts[1].text == "本周安排"
         assert posts[0].images == ("https://i0.hdslb.com/test.jpg",)
-        assert "cookie" not in client.http.build_request("GET", "https://example.com").headers
+        assert (
+            "cookie"
+            not in client.http.build_request("GET", "https://example.com").headers
+        )
     finally:
         await client.close()
 
 
-@pytest.mark.parametrize("bad", [{}, {"items": None}, {"items": [{}]}, {"items": [dict(item(1), id_str="oops")]}])
+@pytest.mark.parametrize(
+    "bad",
+    [{}, {"items": None}, {"items": [{}]}, {"items": [dict(item(1), id_str="oops")]}],
+)
 @pytest.mark.asyncio
 async def test_invalid_dynamic_payload_rejected(bad):
-    client = BiliClient(max_retry=0, transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"code": 0, "data": bad})))
+    client = BiliClient(
+        max_retry=0,
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"code": 0, "data": bad})
+        ),
+    )
     try:
         with pytest.raises(BiliError):
             await client.get_latest_dynamics(1)
@@ -60,10 +83,12 @@ async def test_invalid_dynamic_payload_rejected(bad):
 @pytest.mark.asyncio
 async def test_invalid_credentials_not_retried_or_logged(caplog):
     count = 0
+
     def handler(request):
         nonlocal count
         count += 1
         return httpx.Response(200, json={"code": -101, "message": "fake-test-secret"})
+
     client = BiliClient(transport=httpx.MockTransport(handler))
     client.set_credentials({"SESSDATA": "fake-test-secret"})
     try:
@@ -84,8 +109,15 @@ async def test_catchup_pages_until_checkpoint_and_ignores_pinned_boundary():
         calls.append(offset)
         pinned = item(2)
         pinned["modules"]["module_tag"] = {"text": "置顶"}
-        data = ({"items": [item(15), item(14), pinned], "has_more": True, "offset": "older"}
-                if not offset else {"items": [item(13), item(12), item(10)], "has_more": True, "offset": "older-again"})
+        data = (
+            {"items": [item(15), item(14), pinned], "has_more": True, "offset": "older"}
+            if not offset
+            else {
+                "items": [item(13), item(12), item(10)],
+                "has_more": True,
+                "offset": "older-again",
+            }
+        )
         return httpx.Response(200, json={"code": 0, "data": data})
 
     client = BiliClient(transport=httpx.MockTransport(handler))
@@ -101,11 +133,15 @@ async def test_catchup_pages_until_checkpoint_and_ignores_pinned_boundary():
 async def test_late_posts_and_edits_enqueue_without_reopening_the_baseline(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
-    await data.add_subscription(VtuberState(1, "one"), "group", "special", initial_dynamics=[post(10)])
+    await data.add_subscription(
+        VtuberState(1, "one"), "group", "special", initial_dynamics=[post(10)]
+    )
     assert [p.id for p in await data.ingest_dynamics(1, [post(15)])] == ["15"]
     old = (await data.pending_adjustments(1))[0]
     changed = replace(post(15), text="改到晚上八点")
-    assert [p.id for p in await data.ingest_dynamics(1, [post(8), post(12), changed])] == ["12", "15"]
+    assert [
+        p.id for p in await data.ingest_dynamics(1, [post(8), post(12), changed])
+    ] == ["12", "15"]
     await data.finish_adjustment(1, "15", True, payload=old["payload"])
     assert [j["dynamic_id"] for j in await data.pending_adjustments(1)] == ["12", "15"]
     assert not await data.ingest_dynamics(1, [changed])
@@ -148,8 +184,12 @@ async def test_special_baseline_new_pages_restart_and_pins(tmp_path):
 async def test_empty_baseline_failure_isolation_and_normal_skipped(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
-    await data.add_subscription(VtuberState(1, "one"), "a", "special", initial_dynamics=[])
-    await data.add_subscription(VtuberState(2, "two"), "a", "special", initial_dynamics=[])
+    await data.add_subscription(
+        VtuberState(1, "one"), "a", "special", initial_dynamics=[]
+    )
+    await data.add_subscription(
+        VtuberState(2, "two"), "a", "special", initial_dynamics=[]
+    )
     await data.add_subscription(VtuberState(3, "normal"), "a")
     client = AsyncMock()
     client.get_dynamics_since.side_effect = [BiliError("412"), [post(10, 2)]]
@@ -186,13 +226,17 @@ async def test_first_poll_silent_atomic_dedup_and_cancellation(tmp_path):
     await data.initialize()
     await data.add_subscription(VtuberState(1, "one"), "a", "special")
     assert await data.ingest_dynamics(1, [post(10)]) == []
-    results = await asyncio.gather(*(data.ingest_dynamics(1, [post(20)]) for _ in range(4)))
+    results = await asyncio.gather(
+        *(data.ingest_dynamics(1, [post(20)]) for _ in range(4))
+    )
     assert sum(len(result) for result in results) == 1
     client = AsyncMock()
     entered = asyncio.Event()
+
     async def hang(uid, latest_id):
         entered.set()
         await asyncio.Event().wait()
+
     client.get_dynamics_since.side_effect = hang
     listener = DynamicListener(data, client)
     task = asyncio.create_task(listener.run())

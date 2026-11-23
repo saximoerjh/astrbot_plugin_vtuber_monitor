@@ -1,4 +1,5 @@
 """与平台无关的主动通知，按目标会话相互隔离。"""
+
 import asyncio
 import json
 import math
@@ -57,17 +58,29 @@ def resolve_notification_route(context, umo):
     message_ids = getattr(platform, "_session_last_message_id", {})
     scenes = getattr(platform, "_session_scene", {})
     if message_ids.get(session_id) or (
-        scenes.get(session_id) == "group" and getattr(platform, "_allow_group_proactive_send", False)
+        scenes.get(session_id) == "group"
+        and getattr(platform, "_allow_group_proactive_send", False)
     ):
         return f"{platform_id}:{message_type}:{session_id}", ""
     return umo, "QQ 官方群会话尚未建立路由，请在群内发一条机器人能收到的消息"
 
 
 class Dispatcher:
-    def __init__(self, context, *, normal_start=True, normal_end=True,
-                 special_start=True, special_end=False, send_timeout=15,
-                 message_factory=make_message, live_message_factory=make_live_message,
-                 image_message_factory=make_image_message, flags_provider=None, notice_image=None):
+    def __init__(
+        self,
+        context,
+        *,
+        normal_start=True,
+        normal_end=True,
+        special_start=True,
+        special_end=False,
+        send_timeout=15,
+        message_factory=make_message,
+        live_message_factory=make_live_message,
+        image_message_factory=make_image_message,
+        flags_provider=None,
+        notice_image=None,
+    ):
         if not math.isfinite(send_timeout) or send_timeout <= 0:
             raise ValueError("消息发送超时必须是正数。")
         self.context = context
@@ -93,14 +106,20 @@ class Dispatcher:
 
     async def notification_flags(self):
         """当前生效的四个通知开关；重读失败就退回启动时的值。"""
-        flags = {"normal_start": self.normal_start, "normal_end": self.normal_end,
-                 "special_start": self.special_start, "special_end": self.special_end}
+        flags = {
+            "normal_start": self.normal_start,
+            "normal_end": self.normal_end,
+            "special_start": self.special_start,
+            "special_end": self.special_end,
+        }
         if self.flags_provider is None:
             return flags
         try:
             latest = await self.flags_provider()
         except Exception:
-            logger.warning("Unable to reload notification switches; using startup values")
+            logger.warning(
+                "Unable to reload notification switches; using startup values"
+            )
             return flags
         for name, value in (latest or {}).items():
             if name in flags:
@@ -124,8 +143,14 @@ class Dispatcher:
                             if not await self._deliver_job(data, job, flags):
                                 break
                         except Exception as exc:
-                            self.last_error = f"通知任务处理失败（{type(exc).__name__}）"
-                            logger.warning("Notification processing failed job=%s type=%s", job["id"], type(exc).__name__)
+                            self.last_error = (
+                                f"通知任务处理失败（{type(exc).__name__}）"
+                            )
+                            logger.warning(
+                                "Notification processing failed job=%s type=%s",
+                                job["id"],
+                                type(exc).__name__,
+                            )
                             break
 
             await asyncio.gather(*(deliver_group(group) for group in groups.values()))
@@ -136,21 +161,27 @@ class Dispatcher:
                 await self.flush_schedule_notifications(data, concurrency=4)
             except Exception as exc:
                 self.last_error = f"通知队列读取失败（{type(exc).__name__}）"
-                logger.warning("Notification queue read failed type=%s", type(exc).__name__)
+                logger.warning(
+                    "Notification queue read failed type=%s", type(exc).__name__
+                )
             await asyncio.sleep(interval)
 
     async def _deliver_job(self, data, job, flags):
         kind = job["kind"]
         subscription = await data.get_subscription(job["uid"], job["umo"])
         enabled = False
-        if subscription is not None and (not job["created_at"] or subscription.created_at <= job["created_at"]):
+        if subscription is not None and (
+            not job["created_at"] or subscription.created_at <= job["created_at"]
+        ):
             special = subscription.level == FollowLevel.SPECIAL
             if kind in ("live_start", "live_end"):
                 level = "special" if special else "normal"
                 enabled = flags[f"{level}_{kind.removeprefix('live_')}"]
             elif special:
-                enabled = {"schedule_updated": self.schedule_enabled,
-                           "schedule_adjusted": self.adjustment_enabled}.get(kind, False)
+                enabled = {
+                    "schedule_updated": self.schedule_enabled,
+                    "schedule_adjusted": self.adjustment_enabled,
+                }.get(kind, False)
         if not enabled:
             await data.skip_notification(job["id"])
             return True
@@ -166,9 +197,13 @@ class Dispatcher:
             for index in range(job["next_part"], len(paths)):
                 if not await self._send_local_image(destination, paths[index]):
                     if attempts < 4:
-                        await data.finish_notification(job["id"], False, error="附件发送失败，等待重试")
+                        await data.finish_notification(
+                            job["id"], False, error="附件发送失败，等待重试"
+                        )
                         return False
-                    await data.advance_notification(job["id"], index + 1, "附件发送失败，已发送可用部分")
+                    await data.advance_notification(
+                        job["id"], index + 1, "附件发送失败，已发送可用部分"
+                    )
                 else:
                     await data.advance_notification(job["id"], index + 1)
                 attempts = 0
@@ -177,7 +212,9 @@ class Dispatcher:
         delivered = await self._send(destination, job["message"], cover)
         if not delivered and cover:
             delivered = await self._send(destination, job["message"])
-        await data.finish_notification(job["id"], delivered, error="" if delivered else "平台发送失败或超时")
+        await data.finish_notification(
+            job["id"], delivered, error="" if delivered else "平台发送失败或超时"
+        )
         if delivered:
             self.last_success_at = utc_now()
         return delivered
@@ -192,10 +229,18 @@ class Dispatcher:
             source_id = job["source_id"]
             error = ""
             try:
-                paths = notice_paths(await self.notice_image(job["uid"], source_id)) if self.notice_image else []
+                paths = (
+                    notice_paths(await self.notice_image(job["uid"], source_id))
+                    if self.notice_image
+                    else []
+                )
             except Exception as exc:
                 paths, error = [], "附件生成失败，已发送可用部分"
-                logger.warning("Notification attachment unavailable uid=%s type=%s", job["uid"], type(exc).__name__)
+                logger.warning(
+                    "Notification attachment unavailable uid=%s type=%s",
+                    job["uid"],
+                    type(exc).__name__,
+                )
             await data.set_notification_images(job["uid"], source_id, paths, error)
             return await data.get_notification(job["id"])
 
@@ -204,12 +249,16 @@ class Dispatcher:
         validate_umo(umo)
         try:
             result = await asyncio.wait_for(
-                self.context.send_message(umo, self.image_message_factory(path)), self.send_timeout)
+                self.context.send_message(umo, self.image_message_factory(path)),
+                self.send_timeout,
+            )
             if result is False:
                 raise RuntimeError("Platform rejected the notification image")
         except Exception as exc:
             self.failed += 1
-            logger.warning("VTuber notification image delivery failed type=%s", type(exc).__name__)
+            logger.warning(
+                "VTuber notification image delivery failed type=%s", type(exc).__name__
+            )
             return False
         self.sent += 1
         return True
@@ -218,13 +267,21 @@ class Dispatcher:
         validate_umo(umo)
         try:
             result = await asyncio.wait_for(
-                self.context.send_message(umo, self.live_message_factory(text, cover)
-                                          if cover else self.message_factory(text)), self.send_timeout)
+                self.context.send_message(
+                    umo,
+                    self.live_message_factory(text, cover)
+                    if cover
+                    else self.message_factory(text),
+                ),
+                self.send_timeout,
+            )
             if result is False:
                 raise RuntimeError("Platform rejected the notification")
         except Exception as exc:
             self.failed += 1
-            logger.warning("VTuber notification delivery failed type=%s", type(exc).__name__)
+            logger.warning(
+                "VTuber notification delivery failed type=%s", type(exc).__name__
+            )
             return False
         self.sent += 1
         return True

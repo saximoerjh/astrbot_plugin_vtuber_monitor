@@ -8,7 +8,10 @@ import pytest
 
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
 from astrbot_plugin_vtuber_monitor.core.models import VtuberState
-from astrbot_plugin_vtuber_monitor.core.schedule_models import china_today, schedule_from_parser
+from astrbot_plugin_vtuber_monitor.core.schedule_models import (
+    china_today,
+    schedule_from_parser,
+)
 from astrbot_plugin_vtuber_monitor.core.schedule_models import is_pending_title
 from astrbot_plugin_vtuber_monitor.services.live_schedule import LiveScheduleRecorder
 from astrbot_plugin_vtuber_monitor.services.schedule_display import format_stream
@@ -23,15 +26,29 @@ def monday():
 
 
 def at(day, hour, minute=0):
-    return datetime.fromisoformat(f"{day.isoformat()}T{hour:02d}:{minute:02d}:00").replace(tzinfo=CHINA)
+    return datetime.fromisoformat(
+        f"{day.isoformat()}T{hour:02d}:{minute:02d}:00"
+    ).replace(tzinfo=CHINA)
 
 
 def poster(day, slots, dynamic_id="900", week=None):
-    payload = {"week_start": (week or monday()).isoformat(),
-               "streams": [{"date": day.isoformat(), "start_time": start, "end_time": end, "title": title}
-                           for start, end, title in slots]}
-    return replace(schedule_from_parser(1, payload), source_dynamic_id=dynamic_id,
-                   source_image_url=f"https://i0.hdslb.com/{dynamic_id}.png")
+    payload = {
+        "week_start": (week or monday()).isoformat(),
+        "streams": [
+            {
+                "date": day.isoformat(),
+                "start_time": start,
+                "end_time": end,
+                "title": title,
+            }
+            for start, end, title in slots
+        ],
+    }
+    return replace(
+        schedule_from_parser(1, payload),
+        source_dynamic_id=dynamic_id,
+        source_image_url=f"https://i0.hdslb.com/{dynamic_id}.png",
+    )
 
 
 async def boot(tmp_path):
@@ -44,8 +61,10 @@ async def boot(tmp_path):
 def set_import_time(data, schedule, imported):
     """把这一周的首次导入时间设成 imported（归档表最早那行）。"""
     with sqlite3.connect(data.path) as db:
-        db.execute("UPDATE weekly_schedule_archive SET archived_at=? WHERE uid=? AND week_start=?",
-                   (imported.isoformat(), schedule.uid, schedule.week_start))
+        db.execute(
+            "UPDATE weekly_schedule_archive SET archived_at=? WHERE uid=? AND week_start=?",
+            (imported.isoformat(), schedule.uid, schedule.week_start),
+        )
 
 
 async def store(data, service, schedule, imported):
@@ -60,17 +79,31 @@ async def store(data, service, schedule, imported):
 
 async def observe(data, start, end, title=""):
     await data.save_vtuber_state(
-        VtuberState(1, "主播", 10, True, live_title=title, live_started_at=start.isoformat()))
-    with patch("astrbot_plugin_vtuber_monitor.core.data_manager.utc_now", return_value=end.isoformat()):
+        VtuberState(
+            1, "主播", 10, True, live_title=title, live_started_at=start.isoformat()
+        )
+    )
+    with patch(
+        "astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
+        return_value=end.isoformat(),
+    ):
         await data.save_vtuber_state(VtuberState(1, "主播", 10, False))
 
 
 def planned(schedule):
-    return [stream for stream in schedule["streams"] if stream["source"] != "live_observation"]
+    return [
+        stream
+        for stream in schedule["streams"]
+        if stream["source"] != "live_observation"
+    ]
 
 
 def extras(schedule):
-    return [stream for stream in schedule["streams"] if stream["source"] == "live_observation"]
+    return [
+        stream
+        for stream in schedule["streams"]
+        if stream["source"] == "live_observation"
+    ]
 
 
 @pytest.mark.asyncio
@@ -87,7 +120,9 @@ async def test_blank_week_container_takes_streams_then_rematches(tmp_path):
     assert [plan["source"] for plan in schedule["streams"]] == ["live_observation"]
     assert schedule["streams"][0]["actual_intervals"][0]["session_id"] == 1
     # 真周表来了：这场正好是 20:00 那条 → 重新匹配，突击条目被吸收。
-    await store(data, service, poster(day, [("20:00", "22:00", "歌回")], week=day), at(day, 12))
+    await store(
+        data, service, poster(day, [("20:00", "22:00", "歌回")], week=day), at(day, 12)
+    )
     schedule = await service.get_weekly_schedule(1, week)
     assert len(schedule["streams"]) == 1
     plan = schedule["streams"][0]
@@ -101,9 +136,11 @@ async def test_placeholder_is_created_once_and_never_overwrites(tmp_path):
     data, service, _ = await boot(tmp_path)
     assert await service.ensure_placeholder(1) is True
     assert (await service.get_weekly_schedule(1))["streams"] == []
-    assert await service.ensure_placeholder(1) is False          # 已有容器不再重复建
-    await store(data, service, poster(monday(), [("20:00", "22:00", "晚播")]), at(monday(), 12))
-    assert await service.ensure_placeholder(1) is False          # 真周表不能被空白容器覆盖
+    assert await service.ensure_placeholder(1) is False  # 已有容器不再重复建
+    await store(
+        data, service, poster(monday(), [("20:00", "22:00", "晚播")]), at(monday(), 12)
+    )
+    assert await service.ensure_placeholder(1) is False  # 真周表不能被空白容器覆盖
     assert len((await service.get_weekly_schedule(1))["streams"]) == 1
 
 
@@ -113,17 +150,24 @@ async def test_poster_stored_after_the_stream_backfills_it(tmp_path):
     day = monday()
     await observe(data, at(day, 8), at(day, 10))
     # 观测与周表之间没有发生轮询，回填完全由导入触发。
-    assert await service.store_parsed_schedule(poster(day, [("08:00", "10:00", "早播")])) == "parsed"
+    assert (
+        await service.store_parsed_schedule(poster(day, [("08:00", "10:00", "早播")]))
+        == "parsed"
+    )
     schedule = await service.get_weekly_schedule(1)
     stream = planned(schedule)[0]
     assert stream["status"] == "completed"
-    assert [item["start"] for item in stream["actual_intervals"]] == [at(day, 8).isoformat()]
+    assert [item["start"] for item in stream["actual_intervals"]] == [
+        at(day, 8).isoformat()
+    ]
     assert extras(schedule) == []
     assert await data.pending_live_sessions(1) == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("minutes,matched", [(-60, True), (-61, False), (60, True), (61, False)])
+@pytest.mark.parametrize(
+    "minutes,matched", [(-60, True), (-61, False), (60, True), (61, False)]
+)
 async def test_tolerance_is_one_hour_each_side(tmp_path, minutes, matched):
     data, service, _ = await boot(tmp_path)
     day = monday()
@@ -154,7 +198,9 @@ async def test_unmatched_stream_becomes_a_surprise_entry(tmp_path):
     await recorder.sync(1)
     await recorder.sync(1)
     schedule = await service.get_weekly_schedule(1)
-    assert len(extras(schedule)) == 1 and len(extras(schedule)[0]["actual_intervals"]) == 1
+    assert (
+        len(extras(schedule)) == 1 and len(extras(schedule)[0]["actual_intervals"]) == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -162,12 +208,19 @@ async def test_corrected_poster_re_homes_the_surprise_entry(tmp_path):
     data, service, _ = await boot(tmp_path)
     day = monday()
     await observe(data, at(day, 8), at(day, 10))
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "晚播")], dynamic_id="901"))
+    await service.store_parsed_schedule(
+        poster(day, [("20:00", "22:00", "晚播")], dynamic_id="901")
+    )
     assert len(extras(await service.get_weekly_schedule(1))) == 1
-    await service.store_parsed_schedule(poster(day, [("08:00", "10:00", "早播")], dynamic_id="902"))
+    await service.store_parsed_schedule(
+        poster(day, [("08:00", "10:00", "早播")], dynamic_id="902")
+    )
     schedule = await service.get_weekly_schedule(1)
     assert extras(schedule) == []
-    assert len(planned(schedule)) == 1 and len(planned(schedule)[0]["actual_intervals"]) == 1
+    assert (
+        len(planned(schedule)) == 1
+        and len(planned(schedule)[0]["actual_intervals"]) == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -178,7 +231,12 @@ async def test_week_without_poster_keeps_the_observation_pending(tmp_path):
     await recorder.sync(1)
     assert len(await data.pending_live_sessions(1)) == 1
     assert await recorder.week_summary(1, day.isoformat()) == {
-        "recorded": 0, "pending": 1, "extra": 0, "unknown": 0, "unfulfilled": 0}
+        "recorded": 0,
+        "pending": 1,
+        "extra": 0,
+        "unknown": 0,
+        "unfulfilled": 0,
+    }
     assert (await data.get_work_status())["live_sessions"]["pending"] == 1
 
 
@@ -212,7 +270,9 @@ async def test_live_title_is_optional_for_surprise_entries(tmp_path):
 async def test_pending_title_is_replaced_by_observed_live_title(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "直播（内容待定）")]))
+    await service.store_parsed_schedule(
+        poster(day, [("20:00", "22:00", "直播（内容待定）")])
+    )
     await observe(data, at(day, 20, 5), at(day, 22), title="深夜歌回：随机点歌")
     await recorder.sync(1)
     stream = planned(await service.get_weekly_schedule(1))[0]
@@ -220,7 +280,10 @@ async def test_pending_title_is_replaced_by_observed_live_title(tmp_path):
     assert "深夜歌回：随机点歌" in format_stream(stream)
     # 落位依然只发生一次，重复处理不会改变结果。
     await recorder.sync(1)
-    assert planned(await service.get_weekly_schedule(1))[0]["title"] == "深夜歌回：随机点歌"
+    assert (
+        planned(await service.get_weekly_schedule(1))[0]["title"]
+        == "深夜歌回：随机点歌"
+    )
 
 
 @pytest.mark.asyncio
@@ -238,7 +301,9 @@ async def test_missing_live_title_keeps_the_pending_placeholder(tmp_path):
     data, service, _ = await boot(tmp_path)
     day = monday()
     await observe(data, at(day, 20), at(day, 22))
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "直播（内容待定）")]))
+    await service.store_parsed_schedule(
+        poster(day, [("20:00", "22:00", "直播（内容待定）")])
+    )
     stream = planned(await service.get_weekly_schedule(1))[0]
     assert stream["title"] == "直播（内容待定）"
     assert stream["actual_intervals"]
@@ -248,20 +313,32 @@ async def test_missing_live_title_keeps_the_pending_placeholder(tmp_path):
 async def test_reparse_still_pending_keeps_the_enriched_title(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "直播（内容待定）")]))
+    await service.store_parsed_schedule(
+        poster(day, [("20:00", "22:00", "直播（内容待定）")])
+    )
     await observe(data, at(day, 20), at(day, 22), title="深夜歌回")
     await recorder.sync(1)
     # 同一张图重新解析仍是“内容待定”，不能把已经补全的标题退回去。
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "直播（内容待定）")], dynamic_id="901"))
+    await service.store_parsed_schedule(
+        poster(day, [("20:00", "22:00", "直播（内容待定）")], dynamic_id="901")
+    )
     stream = planned(await service.get_weekly_schedule(1))[0]
     assert stream["title"] == "深夜歌回" and stream["actual_intervals"]
     # 更正后的周表写了真实标题时，以周表为准。
-    await service.store_parsed_schedule(poster(day, [("20:00", "22:00", "深夜歌回特别篇")], dynamic_id="902"))
+    await service.store_parsed_schedule(
+        poster(day, [("20:00", "22:00", "深夜歌回特别篇")], dynamic_id="902")
+    )
     assert planned(await service.get_weekly_schedule(1))[0]["title"] == "深夜歌回特别篇"
 
 
 def test_pending_title_matches_placeholders_but_not_real_programmes():
-    for title in ("直播（内容待定）", "直播(内容待定)", "待定", "联动（待定）", " 内容待定 "):
+    for title in (
+        "直播（内容待定）",
+        "直播(内容待定)",
+        "待定",
+        "联动（待定）",
+        " 内容待定 ",
+    ):
         assert is_pending_title(title), title
     for title in ("歌回", "歌回（待定曲目）", "杂谈：聊聊最近的安排", "", "   ", None):
         assert not is_pending_title(title), title
@@ -276,8 +353,12 @@ async def test_stream_before_the_schedule_was_imported_is_not_marked(tmp_path):
     """
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await store(data, service, poster(day, [("08:00", "10:00", "音乐分享电台")]),
-                at(day + timedelta(days=1), 0, 6))
+    await store(
+        data,
+        service,
+        poster(day, [("08:00", "10:00", "音乐分享电台")]),
+        at(day + timedelta(days=1), 0, 6),
+    )
     assert await recorder.mark_unfulfilled(1, now=at(day + timedelta(days=2), 22)) == 0
     stream = planned(await service.get_weekly_schedule(1))[0]
     assert stream["status"] == "scheduled"
@@ -319,9 +400,11 @@ async def test_broadcast_shorter_than_the_threshold_is_invalid(tmp_path):
     assert stream["actual_intervals"] == [] and stream["status"] == "scheduled"
     assert extras(schedule) == []
     session = (await data.live_sessions_for_uid(1))[0]
-    assert session["synced"] == 3                       # LIVE_SESSION_INVALID
+    assert session["synced"] == 3  # LIVE_SESSION_INVALID
     summary = await recorder.week_summary(1, day.isoformat())
-    assert summary["recorded"] == 0 and summary["extra"] == 0 and summary["pending"] == 0
+    assert (
+        summary["recorded"] == 0 and summary["extra"] == 0 and summary["pending"] == 0
+    )
     assert (await data.get_work_status())["live_sessions"]["invalid"] == 1
     # 到了判定线仍然算未兑现：这场排期并没有被那一分钟兑现。
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
@@ -334,12 +417,22 @@ async def test_short_broadcast_already_placed_is_removed_when_it_ends(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
     await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
-    await data.save_vtuber_state(VtuberState(1, "主播", 10, True, live_title="闪一下",
-                                             live_started_at=at(day, 20, 30).isoformat()))
+    await data.save_vtuber_state(
+        VtuberState(
+            1,
+            "主播",
+            10,
+            True,
+            live_title="闪一下",
+            live_started_at=at(day, 20, 30).isoformat(),
+        )
+    )
     await recorder.sync(1, now=at(day, 20, 31))
     assert planned(await service.get_weekly_schedule(1))[0]["actual_intervals"]
-    with patch("astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
-               return_value=at(day, 20, 31).isoformat()):
+    with patch(
+        "astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
+        return_value=at(day, 20, 31).isoformat(),
+    ):
         await data.save_vtuber_state(VtuberState(1, "主播", 10, False))
     await recorder.sync(1, now=at(day, 20, 32))
     schedule = await service.get_weekly_schedule(1)
@@ -383,19 +476,34 @@ async def test_scheduled_stream_without_broadcast_is_marked_unfulfilled(tmp_path
 async def test_rescheduled_or_unpromised_streams_are_not_marked(tmp_path):
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await store(data, service, poster(day, [
-        ("20:00", "22:00", "晚播"),
-        (None, None, "待定联动"),
-    ]), at(day, 12))
+    await store(
+        data,
+        service,
+        poster(
+            day,
+            [
+                ("20:00", "22:00", "晚播"),
+                (None, None, "待定联动"),
+            ],
+        ),
+        at(day, 12),
+    )
     # 第一条被动态调播、第三条时间待定，都不参与未兑现判定。
-    await service.reschedule_stream(1, planned(await service.get_weekly_schedule(1))[0]["id"],
-                                    day.isoformat(), "22:30", "推迟")
+    await service.reschedule_stream(
+        1,
+        planned(await service.get_weekly_schedule(1))[0]["id"],
+        day.isoformat(),
+        "22:30",
+        "推迟",
+    )
     streams = planned(await service.get_weekly_schedule(1))
     unknown = next(item for item in streams if item["title"] == "待定联动")
     assert unknown["start_time"] is None and unknown["status"] == "unknown"
     assert await recorder.mark_unfulfilled(1, now=at(day, 23, 59)) == 0
-    assert all(item["status"] != "unfulfilled"
-               for item in planned(await service.get_weekly_schedule(1)))
+    assert all(
+        item["status"] != "unfulfilled"
+        for item in planned(await service.get_weekly_schedule(1))
+    )
 
 
 @pytest.mark.asyncio
@@ -414,7 +522,9 @@ async def test_late_broadcast_same_day_revokes_the_unfulfilled_mark(tmp_path):
     assert stream["status"] == "completed"
     # 周表原本写了真实节目名，迟到的实测标题不覆盖它。
     assert stream["title"] == "晚播"
-    assert [item["start"] for item in stream["actual_intervals"]] == [at(day, 23, 30).isoformat()]
+    assert [item["start"] for item in stream["actual_intervals"]] == [
+        at(day, 23, 30).isoformat()
+    ]
     assert extras(schedule) == []
     assert (await recorder.week_summary(1, day.isoformat()))["unfulfilled"] == 0
 
@@ -426,7 +536,9 @@ async def test_next_day_broadcast_does_not_revoke_the_mark(tmp_path):
     await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
     # 次日才补播：未兑现定稿，补播另记突击条目。
-    await observe(data, at(day + timedelta(days=1), 21), at(day + timedelta(days=1), 23))
+    await observe(
+        data, at(day + timedelta(days=1), 21), at(day + timedelta(days=1), 23)
+    )
     await recorder.sync(1, now=at(day + timedelta(days=1), 23))
     schedule = await service.get_weekly_schedule(1)
     assert planned(schedule)[0]["status"] == "unfulfilled"
@@ -439,7 +551,12 @@ async def test_reparse_keeps_unfulfilled_state(tmp_path):
     day = monday()
     await store(data, service, poster(day, [("20:00", "22:00", "晚播")]), at(day, 12))
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 30)) == 1
-    await store(data, service, poster(day, [("20:00", "22:00", "晚播")], dynamic_id="903"), at(day, 12))
+    await store(
+        data,
+        service,
+        poster(day, [("20:00", "22:00", "晚播")], dynamic_id="903"),
+        at(day, 12),
+    )
     assert planned(await service.get_weekly_schedule(1))[0]["status"] == "unfulfilled"
 
 
@@ -452,9 +569,19 @@ async def test_backfill_takes_the_session_off_the_surprise_entry(tmp_path):
     """
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await store(data, service, poster(day, [("19:00", "21:00", "随便看看")]), at(day, 12))
-    await data.save_vtuber_state(VtuberState(1, "主播", 10, True, live_title="不要笑挑战",
-                                             live_started_at=at(day, 21, 39).isoformat()))
+    await store(
+        data, service, poster(day, [("19:00", "21:00", "随便看看")]), at(day, 12)
+    )
+    await data.save_vtuber_state(
+        VtuberState(
+            1,
+            "主播",
+            10,
+            True,
+            live_title="不要笑挑战",
+            live_started_at=at(day, 21, 39).isoformat(),
+        )
+    )
     await recorder.sync(1, now=at(day, 21, 40))
     schedule = await service.get_weekly_schedule(1)
     # 超出 ±1 小时匹配窗口，先成为突击直播。
@@ -465,8 +592,10 @@ async def test_backfill_takes_the_session_off_the_surprise_entry(tmp_path):
     assert planned(schedule)[0]["status"] == "unfulfilled"
     assert await recorder.mark_unfulfilled(1, now=at(day, 22, 5)) == 0
     # 23:30 下播：撤销标记并回填，突击条目必须交出这条区间。
-    with patch("astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
-               return_value=at(day, 23, 30).isoformat()):
+    with patch(
+        "astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
+        return_value=at(day, 23, 30).isoformat(),
+    ):
         await data.save_vtuber_state(VtuberState(1, "主播", 10, False))
     await recorder.sync(1, now=at(day, 23, 31))
     schedule = await service.get_weekly_schedule(1)
@@ -474,8 +603,11 @@ async def test_backfill_takes_the_session_off_the_surprise_entry(tmp_path):
     assert stream["status"] == "completed"
     assert stream["actual_intervals"][0]["end"] == at(day, 23, 30).isoformat()
     assert extras(schedule) == []
-    owners = [item["id"] for item in schedule["streams"]
-              if any(entry["session_id"] == 1 for entry in item.get("actual_intervals") or ())]
+    owners = [
+        item["id"]
+        for item in schedule["streams"]
+        if any(entry["session_id"] == 1 for entry in item.get("actual_intervals") or ())
+    ]
     assert owners == [stream["id"]]
 
 
@@ -484,12 +616,24 @@ async def test_reconcile_cleans_a_session_left_on_two_entries(tmp_path):
     """修复前写坏的数据（同一次直播挂在两条上）在重新落位后必须收敛成一条。"""
     data, service, recorder = await boot(tmp_path)
     day = monday()
-    await store(data, service, poster(day, [("19:00", "21:00", "随便看看")]), at(day, 12))
-    await data.save_vtuber_state(VtuberState(1, "主播", 10, True, live_title="不要笑挑战",
-                                             live_started_at=at(day, 21, 39).isoformat()))
+    await store(
+        data, service, poster(day, [("19:00", "21:00", "随便看看")]), at(day, 12)
+    )
+    await data.save_vtuber_state(
+        VtuberState(
+            1,
+            "主播",
+            10,
+            True,
+            live_title="不要笑挑战",
+            live_started_at=at(day, 21, 39).isoformat(),
+        )
+    )
     await recorder.sync(1, now=at(day, 21, 40))
-    with patch("astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
-               return_value=at(day, 23, 30).isoformat()):
+    with patch(
+        "astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
+        return_value=at(day, 23, 30).isoformat(),
+    ):
         await data.save_vtuber_state(VtuberState(1, "主播", 10, False))
     await recorder.sync(1, now=at(day, 23, 31))
     schedule = await service.get_weekly_schedule(1)
@@ -497,19 +641,30 @@ async def test_reconcile_cleans_a_session_left_on_two_entries(tmp_path):
     # 手工造出旧版本会留下的重复：同一条区间也留在一条突击条目上（且没有结束时间）。
     interval = planned(schedule)[0]["actual_intervals"][0]
     broken = json.loads(json.dumps(schedule))
-    broken["streams"].append({**broken["streams"][0], "id": "legacy-extra",
-                              "date": day.isoformat(), "start_time": "21:39",
-                              "title": "不要笑挑战", "source": "live_observation",
-                              "status": "scheduled",
-                              "actual_intervals": [{**interval, "end": None, "end_basis": None}]})
-    assert await data.save_weekly_schedule(broken, expected=schedule, source_id="",
-                                           reason="live_observation")
+    broken["streams"].append(
+        {
+            **broken["streams"][0],
+            "id": "legacy-extra",
+            "date": day.isoformat(),
+            "start_time": "21:39",
+            "title": "不要笑挑战",
+            "source": "live_observation",
+            "status": "scheduled",
+            "actual_intervals": [{**interval, "end": None, "end_basis": None}],
+        }
+    )
+    assert await data.save_weekly_schedule(
+        broken, expected=schedule, source_id="", reason="live_observation"
+    )
     assert len((await service.get_weekly_schedule(1))["streams"]) == 2
     # 重新解析/回填该周后应回到一条，且区间带回结束时间。
     await recorder.reconcile_week(1, day.isoformat())
     schedule = await service.get_weekly_schedule(1)
     assert len(schedule["streams"]) == 1
-    assert schedule["streams"][0]["actual_intervals"][0]["end"] == at(day, 23, 30).isoformat()
+    assert (
+        schedule["streams"][0]["actual_intervals"][0]["end"]
+        == at(day, 23, 30).isoformat()
+    )
 
 
 @pytest.mark.asyncio
@@ -528,10 +683,13 @@ async def test_repair_placements_keeps_one_owner_and_unrelated_extras(tmp_path):
     broken = json.loads(json.dumps(schedule))
     for plan in broken["streams"]:
         if plan.get("source") == "live_observation":
-            plan["actual_intervals"] = [*plan["actual_intervals"],
-                                        {**interval, "end": None, "end_basis": None}]
-    assert await data.save_weekly_schedule(broken, expected=schedule, source_id="",
-                                           reason="live_observation")
+            plan["actual_intervals"] = [
+                *plan["actual_intervals"],
+                {**interval, "end": None, "end_basis": None},
+            ]
+    assert await data.save_weekly_schedule(
+        broken, expected=schedule, source_id="", reason="live_observation"
+    )
     assert len(extras(await service.get_weekly_schedule(1))[0]["actual_intervals"]) == 2
     assert await recorder.repair_placements(1, [day.isoformat()]) == 1
     schedule = await service.get_weekly_schedule(1)

@@ -1,4 +1,5 @@
 """置顶动态、图片与关键词的候选发现；所有落盘都归 DataManager。"""
+
 import asyncio
 import hashlib
 from datetime import timedelta
@@ -19,15 +20,24 @@ DEFAULT_KEYWORDS = ("周表", "本周", "schedule", "直播安排", "本周安�
 
 class ScheduleDiscovery:
     def __init__(self, data, bili, parser, schedules, keywords=DEFAULT_KEYWORDS):
-        if not isinstance(keywords, (list, tuple)) or any(not isinstance(k, str) or not k.strip() for k in keywords):
+        if not isinstance(keywords, (list, tuple)) or any(
+            not isinstance(k, str) or not k.strip() for k in keywords
+        ):
             raise ValueError("schedule_keywords 必须为非空字符串列表。")
         self.keywords = tuple(k.casefold() for k in keywords)
-        self.data, self.bili, self.parser, self.schedules = data, bili, parser, schedules
+        self.data, self.bili, self.parser, self.schedules = (
+            data,
+            bili,
+            parser,
+            schedules,
+        )
         self._locks = WeakValueDictionary()
         self._scan_slots = asyncio.Semaphore(2)
 
     def is_candidate(self, post):
-        return bool(post.images) and (post.is_pinned or any(k in post.text.casefold() for k in self.keywords))
+        return bool(post.images) and (
+            post.is_pinned or any(k in post.text.casefold() for k in self.keywords)
+        )
 
     def lock_for(self, uid):
         lock = self._locks.get(uid)
@@ -47,7 +57,10 @@ class ScheduleDiscovery:
             if posts is None:
                 posts = await self.bili.get_latest_dynamics(uid)
             self.data._validate_posts(uid, posts)
-            previous = {(r["dynamic_id"], r["image_url"]): r for r in await self.data.get_schedule_candidates(uid)}
+            previous = {
+                (r["dynamic_id"], r["image_url"]): r
+                for r in await self.data.get_schedule_candidates(uid)
+            }
             results = []
             remembered = False
             # 扫描整页，包括动态水位线之外的旧置顶动态。
@@ -57,36 +70,69 @@ class ScheduleDiscovery:
                 for image_index, url in enumerate(post.images, 1):
                     old = previous.get((post.id, url))
                     fingerprint = hashlib.sha256(post.text.encode()).hexdigest()
-                    if (not force and old and old.get("error_code") == "not_schedule"
-                            and old.get("text_fingerprint") == fingerprint):
+                    if (
+                        not force
+                        and old
+                        and old.get("error_code") == "not_schedule"
+                        and old.get("text_fingerprint") == fingerprint
+                    ):
                         # 已经判定过"不是周表"，正文也没变：不再下载、不再花模型。
                         # 这样清理掉这类候选图之后也不会重新拉一遍。
                         continue
-                    if (old and not force and not week_start and old.get("text_fingerprint") == fingerprint and
-                        (old.get("evaluated_on") == china_today().isoformat() or
-                         old["status"] in ("parsed", "unchanged", "archived")) and old["status"] != "failed" and
-                        Path(old["local_image_path"]).is_file() and
-                        (old["status"] not in ("pending", "stale") or not self.parser.provider_id)):
+                    if (
+                        old
+                        and not force
+                        and not week_start
+                        and old.get("text_fingerprint") == fingerprint
+                        and (
+                            old.get("evaluated_on") == china_today().isoformat()
+                            or old["status"] in ("parsed", "unchanged", "archived")
+                        )
+                        and old["status"] != "failed"
+                        and Path(old["local_image_path"]).is_file()
+                        and (
+                            old["status"] not in ("pending", "stale")
+                            or not self.parser.provider_id
+                        )
+                    ):
                         results.append(old)
                         if old["status"] in ("parsed", "unchanged", "archived"):
                             break
                         continue
-                    record = {"uid": uid, "dynamic_id": post.id, "image_url": url,
-                              "image_index": image_index,
-                              "is_pinned": post.is_pinned, "published_at": post.published_at,
-                              "text_fingerprint": fingerprint,
-                              "evaluated_on": china_today().isoformat(),
-                              "local_image_path": old["local_image_path"] if old else "",
-                              "status": "pending", "checked_at": utc_now()}
+                    record = {
+                        "uid": uid,
+                        "dynamic_id": post.id,
+                        "image_url": url,
+                        "image_index": image_index,
+                        "is_pinned": post.is_pinned,
+                        "published_at": post.published_at,
+                        "text_fingerprint": fingerprint,
+                        "evaluated_on": china_today().isoformat(),
+                        "local_image_path": old["local_image_path"] if old else "",
+                        "status": "pending",
+                        "checked_at": utc_now(),
+                    }
                     try:
                         record["error_stage"] = "download"
-                        if force or not record["local_image_path"] or not Path(record["local_image_path"]).is_file():
+                        if (
+                            force
+                            or not record["local_image_path"]
+                            or not Path(record["local_image_path"]).is_file()
+                        ):
                             raw = await self.bili.download_image(url)
                             record["error_stage"] = "image_save"
-                            record["local_image_path"] = await self.data.save_schedule_image(uid, post.id, url, raw)
+                            record[
+                                "local_image_path"
+                            ] = await self.data.save_schedule_image(
+                                uid, post.id, url, raw
+                            )
                         week_hint = explicit_week_hint(post.text)
                         monday = china_today() - timedelta(days=china_today().weekday())
-                        if week_hint and week_hint < monday and not self.parser.provider_id:
+                        if (
+                            week_hint
+                            and week_hint < monday
+                            and not self.parser.provider_id
+                        ):
                             record["status"] = "stale"
                             record["week_start"] = week_hint.isoformat()
                         elif self.parser.provider_id:
@@ -94,14 +140,26 @@ class ScheduleDiscovery:
                             options = {"source_text": post.text}
                             if week_start:
                                 options["week_start"] = week_start
-                            schedule = await self.parser.parse(uid, record["local_image_path"], **options)
-                            schedule = replace(schedule, source_dynamic_id=post.id,
-                                               source_image_url=url, local_image_path=record["local_image_path"])
+                            schedule = await self.parser.parse(
+                                uid, record["local_image_path"], **options
+                            )
+                            schedule = replace(
+                                schedule,
+                                source_dynamic_id=post.id,
+                                source_image_url=url,
+                                local_image_path=record["local_image_path"],
+                            )
                             record["error_stage"] = "image_read"
-                            raw = await asyncio.to_thread(Path(record["local_image_path"]).read_bytes)
+                            raw = await asyncio.to_thread(
+                                Path(record["local_image_path"]).read_bytes
+                            )
                             import_key = f"{post.id}:{url}:{fingerprint}:{hashlib.sha256(raw).hexdigest()}"
                             record["error_stage"] = "store"
-                            record["status"] = await self.schedules.store_parsed_schedule(schedule, import_key=import_key)
+                            record[
+                                "status"
+                            ] = await self.schedules.store_parsed_schedule(
+                                schedule, import_key=import_key
+                            )
                             record["week_start"] = schedule.week_start
                             # 任何一次成功解析都更新定时检查的基准，
                             # 这样订阅时扫描、手动解析都会自动进入定时检查。
@@ -110,7 +168,10 @@ class ScheduleDiscovery:
                                 remembered = True
                         record.pop("error_stage", None)
                     except ScheduleParseError as exc:
-                        record["status"] = {"not_schedule": "skipped", "needs_date": "needs_date"}.get(exc.code, "failed")
+                        record["status"] = {
+                            "not_schedule": "skipped",
+                            "needs_date": "needs_date",
+                        }.get(exc.code, "failed")
                         record["error_code"] = exc.code
                         record["error_message"] = str(exc)
                     except BiliError as exc:
@@ -119,8 +180,14 @@ class ScheduleDiscovery:
                         record["error_message"] = str(exc)
                     except Exception as exc:
                         record["status"] = "failed"
-                        logger.warning("Schedule scan failed uid=%s dynamic=%s image=%s stage=%s type=%s",
-                                       uid, post.id, image_index, record["error_stage"], type(exc).__name__)
+                        logger.warning(
+                            "Schedule scan failed uid=%s dynamic=%s image=%s stage=%s type=%s",
+                            uid,
+                            post.id,
+                            image_index,
+                            record["error_stage"],
+                            type(exc).__name__,
+                        )
                     await self.data.save_schedule_candidate(record)
                     results.append(record)
                     # 一条动态只认一张通过的周表图；

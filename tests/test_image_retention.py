@@ -1,4 +1,5 @@
 """候选原图的保留策略：schedule_images/ 不能无限增长。"""
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -10,15 +11,32 @@ from astrbot_plugin_vtuber_monitor.core.schedule_models import china_today
 
 
 async def candidate(data, *, dynamic_id, url, path, status, week, checked_at):
-    await data.save_schedule_candidate({
-        "uid": 1, "dynamic_id": dynamic_id, "image_url": url, "status": status,
-        "local_image_path": path, "week_start": week, "checked_at": checked_at})
+    await data.save_schedule_candidate(
+        {
+            "uid": 1,
+            "dynamic_id": dynamic_id,
+            "image_url": url,
+            "status": status,
+            "local_image_path": path,
+            "week_start": week,
+            "checked_at": checked_at,
+        }
+    )
 
 
 async def archive(data, *, week, path):
     await data.save_weekly_schedule(
-        {"uid": 1, "week_start": week, "streams": [], "revision": 1, "local_image_path": path},
-        expected=None, source_id="", reason="test")
+        {
+            "uid": 1,
+            "week_start": week,
+            "streams": [],
+            "revision": 1,
+            "local_image_path": path,
+        },
+        expected=None,
+        source_id="",
+        reason="test",
+    )
 
 
 @pytest.mark.asyncio
@@ -37,14 +55,35 @@ async def test_prune_keeps_recent_schedules_and_drops_the_rest(tmp_path):
     already_missing = tmp_path / "schedule_images" / "already-missing.png"
     await archive(data, week=older, path=str(already_missing))
     parsed = await data.save_schedule_image(1, "101", "u2", b"\x89PNGparsed")
-    await candidate(data, dynamic_id="101", url="u2", path=parsed, status="parsed",
-                    week=recent, checked_at=stale)
+    await candidate(
+        data,
+        dynamic_id="101",
+        url="u2",
+        path=parsed,
+        status="parsed",
+        week=recent,
+        checked_at=stale,
+    )
     skipped = await data.save_schedule_image(1, "102", "u3", b"\x89PNGskipped")
-    await candidate(data, dynamic_id="102", url="u3", path=skipped, status="skipped",
-                    week=recent, checked_at=stale)
+    await candidate(
+        data,
+        dynamic_id="102",
+        url="u3",
+        path=skipped,
+        status="skipped",
+        week=recent,
+        checked_at=stale,
+    )
     failed = await data.save_schedule_image(1, "103", "u4", b"\x89PNGfailed")
-    await candidate(data, dynamic_id="103", url="u4", path=failed, status="failed",
-                    week=recent, checked_at=utc_now())          # 宽限期内，先留着
+    await candidate(
+        data,
+        dynamic_id="103",
+        url="u4",
+        path=failed,
+        status="failed",
+        week=recent,
+        checked_at=utc_now(),
+    )  # 宽限期内，先留着
     orphan = tmp_path / "schedule_images" / "orphan.png"
     orphan.write_bytes(b"orphan")
 
@@ -57,7 +96,9 @@ async def test_prune_keeps_recent_schedules_and_drops_the_rest(tmp_path):
     rows = {row["image_url"]: row for row in await data.get_schedule_candidates(1)}
     assert rows["u3"]["local_image_path"] == "" and rows["u3"]["status"] == "skipped"
     assert rows["u2"]["local_image_path"] == parsed
-    assert (await data.get_historical_schedule(1, recent))["local_image_path"] == archived
+    assert (await data.get_historical_schedule(1, recent))[
+        "local_image_path"
+    ] == archived
     assert (await data.get_historical_schedule(1, long_ago))["local_image_path"] == ""
     assert (await data.get_historical_schedule(1, older))["local_image_path"] == ""
     assert len(await data.get_schedule_history(1)) == 3
@@ -82,8 +123,9 @@ async def test_prune_keeps_the_image_a_pending_scan_is_waiting_for(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
     pending = await data.save_schedule_image(1, "100", "u9", b"\x89PNGpending")
-    await data.save_schedule_tracking(1, {"week": "2026-09-28",
-                                          "pending": {"path": pending, "fingerprint": "f"}})
+    await data.save_schedule_tracking(
+        1, {"week": "2026-09-28", "pending": {"path": pending, "fingerprint": "f"}}
+    )
     orphan = tmp_path / "schedule_images" / "orphan.png"
     orphan.write_bytes(b"orphan")
     result = await data.prune_schedule_images()

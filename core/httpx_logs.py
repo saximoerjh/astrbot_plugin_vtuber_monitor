@@ -5,13 +5,17 @@
 请求日志，INFO 级别会带上完整 URL，而扫码登录的 URL 里含 key 与跨域票据，
 只能通过给那个 logger 挂 Filter 才能摘掉。astrbot 的 logger 代理够不到它。
 """
+
 import logging
 
 import httpx
 
 # 只有这些主机的 URL 会被摘掉 query。
-SENSITIVE_HOSTS = ("passport.bilibili.com", "passport.biligame.com",
-                   "account.bilibili.com")
+SENSITIVE_HOSTS = (
+    "passport.bilibili.com",
+    "passport.biligame.com",
+    "account.bilibili.com",
+)
 
 
 class LoginUrlRedactor(logging.Filter):
@@ -21,8 +25,10 @@ class LoginUrlRedactor(logging.Filter):
         if isinstance(record.args, tuple):
             record.args = tuple(
                 value.copy_with(query=None)
-                if isinstance(value, httpx.URL) and value.host in SENSITIVE_HOSTS else value
-                for value in record.args)
+                if isinstance(value, httpx.URL) and value.host in SENSITIVE_HOSTS
+                else value
+                for value in record.args
+            )
         return True
 
 

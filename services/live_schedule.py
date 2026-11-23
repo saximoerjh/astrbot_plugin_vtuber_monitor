@@ -5,6 +5,7 @@
 只有突击条目会重新评估，因此直播之后才保存的周表也能通过
 ``reconcile_week`` 把这场直播补记进去。
 """
+
 import asyncio
 import json
 import uuid
@@ -13,10 +14,19 @@ from weakref import WeakValueDictionary
 
 from astrbot.api import logger
 
-from ..core.data_manager import (LIVE_SESSION_INVALID, LIVE_SESSION_PENDING,
-                                 LIVE_SESSION_RECORDED, LIVE_SESSION_SKIPPED)
-from ..core.schedule_models import (UNFULFILLED_STATUS, StreamPlan, WeeklySchedule,
-                                    is_pending_title, validate_schedule)
+from ..core.data_manager import (
+    LIVE_SESSION_INVALID,
+    LIVE_SESSION_PENDING,
+    LIVE_SESSION_RECORDED,
+    LIVE_SESSION_SKIPPED,
+)
+from ..core.schedule_models import (
+    UNFULFILLED_STATUS,
+    StreamPlan,
+    WeeklySchedule,
+    is_pending_title,
+    validate_schedule,
+)
 
 CHINA = timezone(timedelta(hours=8))
 MATCH_TOLERANCE = timedelta(hours=1)
@@ -46,14 +56,25 @@ def extra_plan_id(uid, session_id):
 
 
 def interval_of(session):
-    return {"session_id": session["id"], "start": session["start_time"], "end": session["end_time"],
-            "start_basis": session["start_basis"],
-            "end_basis": "observed" if session["end_time"] else None}
+    return {
+        "session_id": session["id"],
+        "start": session["start_time"],
+        "end": session["end_time"],
+        "start_basis": session["start_basis"],
+        "end_basis": "observed" if session["end_time"] else None,
+    }
 
 
 class LiveScheduleRecorder:
-    def __init__(self, data, tolerance=MATCH_TOLERANCE, *, unfulfilled_after=UNFULFILLED_AFTER,
-                 min_live_duration=MIN_LIVE_DURATION, placeholder=None):
+    def __init__(
+        self,
+        data,
+        tolerance=MATCH_TOLERANCE,
+        *,
+        unfulfilled_after=UNFULFILLED_AFTER,
+        min_live_duration=MIN_LIVE_DURATION,
+        placeholder=None,
+    ):
         self.data = data
         self.tolerance = tolerance
         self.unfulfilled_after = unfulfilled_after
@@ -74,7 +95,9 @@ class LiveScheduleRecorder:
         """轮询入口：先退役无法落位的记录，再处理待落位的场次，最后判未兑现。"""
         async with self._lock_for(uid):
             await self._retire_unknown_starts(uid)
-            weeks = set(await self._pending_weeks(uid)) | await self._invalidate_short_sessions(uid)
+            weeks = set(
+                await self._pending_weeks(uid)
+            ) | await self._invalidate_short_sessions(uid)
             for week in sorted(weeks):
                 await self._place_week(uid, week)
             await self.mark_unfulfilled(uid, now)
@@ -93,19 +116,32 @@ class LiveScheduleRecorder:
             if row["start_time"]:
                 if week_start_of(local(row["start_time"]).date()) == week_start:
                     known.append(row)
-            elif row["synced"] == LIVE_SESSION_SKIPPED and row["observed_at"] \
-                    and week_start_of(local(row["observed_at"]).date()) == week_start:
+            elif (
+                row["synced"] == LIVE_SESSION_SKIPPED
+                and row["observed_at"]
+                and week_start_of(local(row["observed_at"]).date()) == week_start
+            ):
                 unknown.append(row)
         schedule = await self.data.get_historical_schedule(uid, week_start)
-        extras = {item["session_id"] for plan in (schedule or {"streams": ()})["streams"]
-                  if plan.get("source") == EXTRA_SOURCE
-                  for item in plan.get("actual_intervals") or ()}
-        return {"recorded": sum(1 for row in known if row["synced"] == LIVE_SESSION_RECORDED),
-                "pending": sum(1 for row in known if row["synced"] == LIVE_SESSION_PENDING),
-                "extra": sum(1 for row in known if row["id"] in extras),
-                "unknown": len(unknown),
-                "unfulfilled": sum(1 for plan in (schedule or {"streams": ()})["streams"]
-                                   if plan.get("status") == UNFULFILLED_STATUS)}
+        extras = {
+            item["session_id"]
+            for plan in (schedule or {"streams": ()})["streams"]
+            if plan.get("source") == EXTRA_SOURCE
+            for item in plan.get("actual_intervals") or ()
+        }
+        return {
+            "recorded": sum(
+                1 for row in known if row["synced"] == LIVE_SESSION_RECORDED
+            ),
+            "pending": sum(1 for row in known if row["synced"] == LIVE_SESSION_PENDING),
+            "extra": sum(1 for row in known if row["id"] in extras),
+            "unknown": len(unknown),
+            "unfulfilled": sum(
+                1
+                for plan in (schedule or {"streams": ()})["streams"]
+                if plan.get("status") == UNFULFILLED_STATUS
+            ),
+        }
 
     async def _retire_unknown_starts(self, uid):
         for session in await self.data.live_sessions_for_uid(uid):
@@ -115,10 +151,16 @@ class LiveScheduleRecorder:
 
     def short_session(self, session):
         """开播时长不足阈值的观测；时长未知（还没下播）时不算。"""
-        if self.min_live_duration <= timedelta(0) or not session["start_time"] or not session["end_time"]:
+        if (
+            self.min_live_duration <= timedelta(0)
+            or not session["start_time"]
+            or not session["end_time"]
+        ):
             return False
         try:
-            duration = datetime.fromisoformat(session["end_time"]) - datetime.fromisoformat(session["start_time"])
+            duration = datetime.fromisoformat(
+                session["end_time"]
+            ) - datetime.fromisoformat(session["start_time"])
         except (TypeError, ValueError):
             return False
         return duration < self.min_live_duration
@@ -127,7 +169,9 @@ class LiveScheduleRecorder:
         """把太短的开播标成无效，返回需要重新落位（好把已挂上的区间摘掉）的周。"""
         weeks = set()
         for session in await self.data.live_sessions_for_uid(uid):
-            if session["synced"] == LIVE_SESSION_INVALID or not self.short_session(session):
+            if session["synced"] == LIVE_SESSION_INVALID or not self.short_session(
+                session
+            ):
                 continue
             await self.data.invalidate_live_session(session["id"])
             weeks.add(week_of_session(session))
@@ -143,11 +187,13 @@ class LiveScheduleRecorder:
     @staticmethod
     def awaiting_start(plan):
         """还没开播、也没被调播或取消的排期场次：未兑现的候选。"""
-        return (plan.get("status") == "scheduled"
-                and plan.get("source") != EXTRA_SOURCE
-                and not plan.get("rescheduled_start_time")
-                and bool(plan.get("start_time"))
-                and not plan.get("actual_intervals"))
+        return (
+            plan.get("status") == "scheduled"
+            and plan.get("source") != EXTRA_SOURCE
+            and not plan.get("rescheduled_start_time")
+            and bool(plan.get("start_time"))
+            and not plan.get("actual_intervals")
+        )
 
     async def repair_placements(self, uid, weeks):
         """兜底修复：同一场观测只保留一个持有者。
@@ -171,14 +217,20 @@ class LiveScheduleRecorder:
             changed = False
             for plan in streams:
                 intervals = plan.get("actual_intervals") or ()
-                kept = [item for item in intervals
-                        if owners.get(item["session_id"], plan["id"]) == plan["id"]]
+                kept = [
+                    item
+                    for item in intervals
+                    if owners.get(item["session_id"], plan["id"]) == plan["id"]
+                ]
                 if len(kept) != len(intervals):
                     plan["actual_intervals"] = kept
                     plan["revision"] = plan.get("revision", 0) + 1
                     changed = True
-            trimmed = [plan for plan in streams
-                       if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")]
+            trimmed = [
+                plan
+                for plan in streams
+                if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")
+            ]
             if not changed and len(trimmed) == len(streams):
                 continue
             if await self._save(uid, week, schedule, trimmed):
@@ -196,11 +248,15 @@ class LiveScheduleRecorder:
         now = now or datetime.now(CHINA)
         today = now.date()
         marked = 0
-        for week in sorted({week_start_of(today), week_start_of(today - timedelta(days=1))}):
+        for week in sorted(
+            {week_start_of(today), week_start_of(today - timedelta(days=1))}
+        ):
             schedule = await self.data.get_historical_schedule(uid, week)
             if schedule is None:
                 continue
-            imported = self._imported_at(await self.data.schedule_imported_at(uid, week))
+            imported = self._imported_at(
+                await self.data.schedule_imported_at(uid, week)
+            )
             streams = [dict(plan) for plan in schedule["streams"]]
             changed = False
             count = 0
@@ -209,7 +265,11 @@ class LiveScheduleRecorder:
                 if plan.get("status") == UNFULFILLED_STATUS:
                     # 旧版本按“没观测到就判”写下的错标记：周表其实是这场之后才
                     # 解析到的，同一轮里撤销，免得永久留红。
-                    if imported is not None and planned is not None and planned < imported:
+                    if (
+                        imported is not None
+                        and planned is not None
+                        and planned < imported
+                    ):
                         plan["status"] = "scheduled"
                         plan["revision"] = plan.get("revision", 0) + 1
                         changed = True
@@ -239,7 +299,10 @@ class LiveScheduleRecorder:
         started = local(session["start_time"])
         best = None
         for plan in streams:
-            if plan.get("status") != UNFULFILLED_STATUS or plan.get("source") == EXTRA_SOURCE:
+            if (
+                plan.get("status") != UNFULFILLED_STATUS
+                or plan.get("source") == EXTRA_SOURCE
+            ):
                 continue
             if plan["date"] != day:
                 continue
@@ -260,7 +323,9 @@ class LiveScheduleRecorder:
     def _planned_start(plan):
         if not plan.get("start_time"):
             return None
-        return datetime.fromisoformat(f"{plan['date']}T{plan['start_time']}:00").replace(tzinfo=CHINA)
+        return datetime.fromisoformat(
+            f"{plan['date']}T{plan['start_time']}:00"
+        ).replace(tzinfo=CHINA)
 
     @staticmethod
     def _imported_at(value):
@@ -295,19 +360,32 @@ class LiveScheduleRecorder:
             return plan_id
         started = local(session["start_time"])
         title = (session.get("title") or "").strip()[:300] or EXTRA_TITLE
-        streams.append({"id": plan_id, "date": started.date().isoformat(),
-                        "start_time": started.strftime("%H:%M"), "title": title,
-                        "status": "completed" if session["end_time"] else "scheduled",
-                        "source": EXTRA_SOURCE, "revision": 0, "original_date": None,
-                        "original_start_time": None, "original_end_time": None,
-                        "rescheduled_date": None, "rescheduled_start_time": None,
-                        "actual_intervals": []})
+        streams.append(
+            {
+                "id": plan_id,
+                "date": started.date().isoformat(),
+                "start_time": started.strftime("%H:%M"),
+                "title": title,
+                "status": "completed" if session["end_time"] else "scheduled",
+                "source": EXTRA_SOURCE,
+                "revision": 0,
+                "original_date": None,
+                "original_start_time": None,
+                "original_end_time": None,
+                "rescheduled_date": None,
+                "rescheduled_start_time": None,
+                "actual_intervals": [],
+            }
+        )
         return plan_id
 
     @staticmethod
     def _apply(plan, session):
-        intervals = [item for item in plan.get("actual_intervals") or ()
-                     if item["session_id"] != session["id"]]
+        intervals = [
+            item
+            for item in plan.get("actual_intervals") or ()
+            if item["session_id"] != session["id"]
+        ]
         intervals.append(interval_of(session))
         intervals.sort(key=lambda item: item["start"])
         changed = intervals != list(plan.get("actual_intervals") or ())
@@ -319,7 +397,11 @@ class LiveScheduleRecorder:
             plan["status"] = "completed" if session["end_time"] else "scheduled"
             changed = True
         observed = (session.get("title") or "").strip()[:300]
-        if observed and is_pending_title(plan.get("title")) and plan.get("title") != observed:
+        if (
+            observed
+            and is_pending_title(plan.get("title"))
+            and plan.get("title") != observed
+        ):
             # 周表只写了“内容待定”时，用实测到的直播间标题补全；
             # 周表原本写了真实节目名时不覆盖。
             plan["title"] = observed
@@ -385,14 +467,18 @@ class LiveScheduleRecorder:
                 intervals = plan.get("actual_intervals") or ()
                 if not any(item["session_id"] == session["id"] for item in intervals):
                     continue
-                plan["actual_intervals"] = [item for item in intervals
-                                            if item["session_id"] != session["id"]]
+                plan["actual_intervals"] = [
+                    item for item in intervals if item["session_id"] != session["id"]
+                ]
                 plan["revision"] = plan.get("revision", 0) + 1
                 changed = True
             changed |= self._apply(by_id[target], session)
         changed |= self._strip_invalid(streams, invalid)
-        streams = [plan for plan in streams
-                   if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")]
+        streams = [
+            plan
+            for plan in streams
+            if plan.get("source") != EXTRA_SOURCE or plan.get("actual_intervals")
+        ]
         if changed or len(streams) != len(schedule["streams"]):
             if not await self._save(uid, week_start, schedule, streams):
                 return
@@ -425,14 +511,21 @@ class LiveScheduleRecorder:
         current = await self.data.get_historical_schedule(uid, week_start)
         if current != schedule:
             # 周表已被其他写入方改动，下一轮重新读取后再落位。
-            logger.warning("Live schedule placement deferred uid=%s week=%s", uid, week_start)
+            logger.warning(
+                "Live schedule placement deferred uid=%s week=%s", uid, week_start
+            )
             return False
-        candidate = WeeklySchedule(**{**schedule, "streams": tuple(StreamPlan(**plan) for plan in streams)})
+        candidate = WeeklySchedule(
+            **{**schedule, "streams": tuple(StreamPlan(**plan) for plan in streams)}
+        )
         validate_schedule(candidate, allow_history=True)
         # 内容没有变化说明区间已经写入，同样算成功。
         await self.data.save_weekly_schedule(
-            json.loads(json.dumps(candidate.to_dict())), expected=schedule,
-            source_id="", reason="live_observation")
+            json.loads(json.dumps(candidate.to_dict())),
+            expected=schedule,
+            source_id="",
+            reason="live_observation",
+        )
         return True
 
     async def _finish(self, sessions, placement, week_start):

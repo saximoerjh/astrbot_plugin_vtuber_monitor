@@ -7,11 +7,18 @@ import pytest
 
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
 from astrbot_plugin_vtuber_monitor.core.models import VtuberState
-from astrbot_plugin_vtuber_monitor.services.subscription_service import SubscriptionService
-from astrbot_plugin_vtuber_monitor.services.target_service import TargetService, normalize_alias
+from astrbot_plugin_vtuber_monitor.services.subscription_service import (
+    SubscriptionService,
+)
+from astrbot_plugin_vtuber_monitor.services.target_service import (
+    TargetService,
+    normalize_alias,
+)
 
 
-@pytest.mark.parametrize("alias", ["", "123", "１２３", "two words", "a/b", "x" * 25, "a\nname"])
+@pytest.mark.parametrize(
+    "alias", ["", "123", "１２３", "two words", "a/b", "x" * 25, "a\nname"]
+)
 def test_alias_validation(alias):
     with pytest.raises(ValueError):
         normalize_alias(alias)
@@ -52,8 +59,12 @@ async def test_user_and_session_isolation_ambiguity_and_collisions(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
     for uid in (1, 2):
-        await data.add_subscription(VtuberState(uid, f"主播{uid}"), "group", user_id="alice")
-        await data.add_subscription(VtuberState(uid, f"主播{uid}"), "private", user_id="alice")
+        await data.add_subscription(
+            VtuberState(uid, f"主播{uid}"), "group", user_id="alice"
+        )
+        await data.add_subscription(
+            VtuberState(uid, f"主播{uid}"), "private", user_id="alice"
+        )
     targets = TargetService(data)
     await targets.set_alias(1, "小路", "group", "alice")
     await targets.set_alias(2, "小路", "group", "bob")
@@ -93,8 +104,11 @@ async def test_concurrent_case_insensitive_collision_and_legacy_names(tmp_path):
     for uid in (1, 2):
         await data.add_subscription(VtuberState(uid, "同名"), "g")
     targets = TargetService(data)
-    results = await asyncio.gather(targets.set_alias(1, "Komichi", "g", "alice"),
-                                   targets.set_alias(2, "KOMICHI", "g", "alice"), return_exceptions=True)
+    results = await asyncio.gather(
+        targets.set_alias(1, "Komichi", "g", "alice"),
+        targets.set_alias(2, "KOMICHI", "g", "alice"),
+        return_exceptions=True,
+    )
     assert sum(isinstance(result, ValueError) for result in results) == 1
     assert await targets.resolve("ｋｏｍｉｃｈｉ", "g", "alice") in (1, 2)
     with pytest.raises(ValueError, match="重名"):
@@ -108,9 +122,14 @@ async def test_multi_alias_migration_preserves_old_data_and_is_repeatable(tmp_pa
             umo TEXT NOT NULL, user_id TEXT NOT NULL, uid INTEGER NOT NULL,
             alias TEXT NOT NULL, alias_key TEXT NOT NULL,
             PRIMARY KEY(umo, user_id, uid), UNIQUE(umo, user_id, alias_key))""")
-        db.executemany("INSERT INTO streamer_aliases VALUES (?, ?, ?, ?, ?)",
-                       [("g", "alice", 1, "小路", "小路"), ("g", "bob", 1, "路", "路"),
-                        ("private", "alice", 2, "路", "路")])
+        db.executemany(
+            "INSERT INTO streamer_aliases VALUES (?, ?, ?, ?, ?)",
+            [
+                ("g", "alice", 1, "小路", "小路"),
+                ("g", "bob", 1, "路", "路"),
+                ("private", "alice", 2, "路", "路"),
+            ],
+        )
         db.commit()
     data = DataManager(tmp_path)
     await data.initialize()
@@ -134,9 +153,14 @@ async def test_multi_alias_duplicate_concurrency_and_precise_deletion(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
     for uid in (1, 2):
-        await data.add_subscription(VtuberState(uid, f"主播{uid}"), "g", user_id="alice")
+        await data.add_subscription(
+            VtuberState(uid, f"主播{uid}"), "g", user_id="alice"
+        )
     targets = TargetService(data)
-    await asyncio.gather(targets.set_alias(1, "路", "g", "alice"), targets.set_alias(1, "Komichi", "g", "alice"))
+    await asyncio.gather(
+        targets.set_alias(1, "路", "g", "alice"),
+        targets.set_alias(1, "Komichi", "g", "alice"),
+    )
     await targets.set_alias(1, "ＫＯＭＩＣＨＩ", "g", "alice")
     assert len(await data.get_aliases("g", "alice")) == 2
     with pytest.raises(ValueError, match="多个别名"):

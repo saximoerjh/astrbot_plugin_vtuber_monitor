@@ -1,14 +1,22 @@
 """把配置界面分组，同时保留运行期稳定的扁平选项名。"""
+
 import copy
 import json
 from functools import cache
 from pathlib import Path
 
 MERGED_PROVIDER_KEY = "multimodal_provider_id"
-LEGACY_PROVIDER_KEYS = ("schedule_provider_id", "adjustment_provider_id", "greeting_provider_id")
+LEGACY_PROVIDER_KEYS = (
+    "schedule_provider_id",
+    "adjustment_provider_id",
+    "greeting_provider_id",
+)
 DISCOVERY_KEY = "schedule_scan_times"
-LEGACY_DISCOVERY_KEYS = ("enable_dynamic_polling", "enable_schedule_processing",
-                         "auto_discover_schedule")
+LEGACY_DISCOVERY_KEYS = (
+    "enable_dynamic_polling",
+    "enable_schedule_processing",
+    "auto_discover_schedule",
+)
 MIDNIGHT_KEY = "enable_midnight_schedule_check"
 LEGACY_SESSDATA_KEY = "bilibili_sessdata"
 ADJUSTMENT_KEY = "auto_adjustment_with_schedule"
@@ -111,8 +119,14 @@ def merge_provider_selection(config):
 
 @cache
 def _config_groups():
-    schema = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
-    return {key: item["items"] for key, item in schema.items() if item["type"] == "object"}
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return {
+        key: item["items"] for key, item in schema.items() if item["type"] == "object"
+    }
 
 
 def prepare_config(config):
@@ -132,7 +146,12 @@ def prepare_config(config):
                 config[key] = copy.deepcopy(default)
         config["_grouped_config_migrated"] = True
         changed = True
-    for migrate in (merge_provider_selection, migrate_scan_times, merge_adjustment_switches, drop_manual_credentials):
+    for migrate in (
+        merge_provider_selection,
+        migrate_scan_times,
+        merge_adjustment_switches,
+        drop_manual_credentials,
+    ):
         changed |= migrate(config)
     if changed and callable(getattr(config, "save_config", None)):
         config.save_config()

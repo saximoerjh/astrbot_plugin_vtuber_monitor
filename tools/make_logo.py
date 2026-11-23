@@ -7,6 +7,7 @@ metadata.yaml 里没有对应字段），卡片按圆角方块展示。原图是
 深蓝底 + 一台显示器里坐着主播，所以先把四角同色的留白按内容裁掉、再补一点点
 边距，然后在 4 倍尺寸上做圆角，最后缩到 256。换素材改 SOURCE，换圆角改 RADIUS。
 """
+
 import sys
 from pathlib import Path
 
@@ -15,9 +16,9 @@ from PIL import Image, ImageChops, ImageDraw
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 SOURCE = PLUGIN_DIR / "docs" / "4016_monitor.png"
 OUTPUT = 256
-RADIUS = 56              # 圆角半径（最终尺寸下），卡片本身就是圆角方块
-PADDING = 0.03           # 内容四周留一点底色，别贴到圆角边上
-TOLERANCE = 18           # 与四角底色差多少算"内容"
+RADIUS = 56  # 圆角半径（最终尺寸下），卡片本身就是圆角方块
+PADDING = 0.03  # 内容四周留一点底色，别贴到圆角边上
+TOLERANCE = 18  # 与四角底色差多少算"内容"
 SUPERSAMPLE = 4
 
 
@@ -48,13 +49,16 @@ def build():
     square = square.resize((side, side), Image.LANCZOS)
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     mask = Image.new("L", (side, side), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, side - 1, side - 1],
-                                           radius=RADIUS * SUPERSAMPLE, fill=255)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, side - 1, side - 1], radius=RADIUS * SUPERSAMPLE, fill=255
+    )
     canvas.paste(square, (0, 0), mask)
     return canvas.resize((OUTPUT, OUTPUT), Image.LANCZOS)
 
 
 if __name__ == "__main__":
-    target = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else PLUGIN_DIR / "logo.png"
+    target = (
+        Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else PLUGIN_DIR / "logo.png"
+    )
     build().save(target, format="PNG", optimize=True)
     print(f"{target} {target.stat().st_size // 1024}KiB")

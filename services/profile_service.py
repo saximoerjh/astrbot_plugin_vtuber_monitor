@@ -5,6 +5,7 @@
 因此这里复用插件已有的无头浏览器读取空间页上的图片地址，再走
 BiliClient 的 CDN 下载（带域名、类型与大小校验）。
 """
+
 import asyncio
 import base64
 import json
@@ -55,9 +56,14 @@ def next_sweep(now):
 def rendition_url(url, kind):
     """把 CDN 地址换成固定尺寸的版本；域名不合规时抛错由调用方降级。"""
     parts = urlsplit(url)
-    if (parts.scheme != "https" or not parts.hostname or
-            not parts.hostname.endswith(".hdslb.com") or parts.username or
-            parts.password or parts.port not in (None, 443)):
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or not parts.hostname.endswith(".hdslb.com")
+        or parts.username
+        or parts.password
+        or parts.port not in (None, 443)
+    ):
         raise BiliError("空间图片必须来自 Bilibili HTTPS 图片 CDN。")
     return parts._replace(path=parts.path.split("@")[0] + RENDITION[kind]).geturl()
 
@@ -107,7 +113,10 @@ class SpaceProfileFetcher:
     READY = """() => !!document.querySelector('img[src*="/bfs/face/"]')"""
 
     def _extract_js(self):
-        return ("() => {" + self._HELPER + """
+        return (
+            "() => {"
+            + self._HELPER
+            + """
             let avatar = '', area = 0;
             for (const img of document.querySelectorAll('img')) {
                 if (!img.src || !img.src.includes('/bfs/face/')) continue;
@@ -115,7 +124,8 @@ class SpaceProfileFetcher:
                 if (size > area) { area = size; avatar = img.src; }
             }
             return {header: headerUrl(), avatar: avatar};
-        }""")
+        }"""
+        )
 
     def _header_ready_js(self):
         return "() => {" + self._HELPER + " return !!headerUrl(); }"
@@ -138,26 +148,37 @@ class SpaceProfileFetcher:
         except BiliError:
             raise
         except Exception:
-            raise BiliError("读取主播空间资料失败（浏览器不可用或页面加载超时）。") from None
+            raise BiliError(
+                "读取主播空间资料失败（浏览器不可用或页面加载超时）。"
+            ) from None
 
     async def _fetch(self, uids):
         from playwright.async_api import async_playwright
+
         async with async_playwright() as playwright:
             channel = self.channel
             if channel == "auto":
-                channel = ("chromium" if Path(playwright.chromium.executable_path).exists()
-                           or sys.platform != "win32" else "msedge")
+                channel = (
+                    "chromium"
+                    if Path(playwright.chromium.executable_path).exists()
+                    or sys.platform != "win32"
+                    else "msedge"
+                )
             browser = await playwright.chromium.launch(channel=channel, headless=True)
             try:
                 context = await browser.new_context(
-                    viewport={"width": 1440, "height": 900}, locale="zh-CN",
-                    service_workers="block")
+                    viewport={"width": 1440, "height": 900},
+                    locale="zh-CN",
+                    service_workers="block",
+                )
 
                 async def route_request(route):
                     parts = urlsplit(route.request.url)
                     host = parts.hostname or ""
                     if parts.scheme == "https" and any(
-                            host == domain or host.endswith("." + domain) for domain in ALLOWED_HOSTS):
+                        host == domain or host.endswith("." + domain)
+                        for domain in ALLOWED_HOSTS
+                    ):
                         await route.continue_()
                     else:
                         await route.abort()
@@ -167,19 +188,29 @@ class SpaceProfileFetcher:
                 for uid in uids:
                     page = await context.new_page()
                     try:
-                        await page.goto(f"https://space.bilibili.com/{uid}",
-                                        wait_until="domcontentloaded", timeout=45000)
+                        await page.goto(
+                            f"https://space.bilibili.com/{uid}",
+                            wait_until="domcontentloaded",
+                            timeout=45000,
+                        )
                         # 条件等待代替固定 4 秒：正常页面约 1 秒就绪，
                         # 没有自定义头图的主播也只多花很短的时间。
-                        await page.wait_for_function(self.READY, timeout=10000, polling=300)
+                        await page.wait_for_function(
+                            self.READY, timeout=10000, polling=300
+                        )
                         try:
-                            await page.wait_for_function(self._header_ready_js(), timeout=2000, polling=200)
+                            await page.wait_for_function(
+                                self._header_ready_js(), timeout=2000, polling=200
+                            )
                         except Exception:
                             pass
                         await page.wait_for_timeout(200)
                         found = await page.evaluate(self._extract_js())
-                        results[uid] = {"avatar": found.get("avatar") or "",
-                                        "header": found.get("header") or "", "ok": True}
+                        results[uid] = {
+                            "avatar": found.get("avatar") or "",
+                            "header": found.get("header") or "",
+                            "ok": True,
+                        }
                     except Exception:
                         logger.warning("Space page read failed uid=%s", uid)
                         results[uid] = {"ok": False}
@@ -208,7 +239,9 @@ class ProfileService:
         """只读本地记录，不访问网络；缺失或损坏时返回 None。"""
         _, path = self._paths(uid)
         try:
-            record = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8"))
+            record = json.loads(
+                await asyncio.to_thread(path.read_text, encoding="utf-8")
+            )
         except (OSError, ValueError):
             return None
         return record if isinstance(record, dict) else None
@@ -218,8 +251,11 @@ class ProfileService:
         if not url:
             record.setdefault("errors", []).append(f"{kind}_missing")
             return
-        if (record.get(f"{kind}_url") == url and record.get(kind)
-                and await asyncio.to_thread(Path(record[kind]).is_file)):
+        if (
+            record.get(f"{kind}_url") == url
+            and record.get(kind)
+            and await asyncio.to_thread(Path(record[kind]).is_file)
+        ):
             # 地址没变且文件还在，就不重复下载，省一次 CDN 流量。
             return
         try:
@@ -231,7 +267,9 @@ class ProfileService:
         if len(raw) > ASSET_LIMIT or not mime:
             record.setdefault("errors", []).append(f"{kind}_invalid")
             return
-        suffix = {"image/png": ".png", "image/webp": ".webp", "image/jpeg": ".jpg"}[mime]
+        suffix = {"image/png": ".png", "image/webp": ".webp", "image/jpeg": ".jpg"}[
+            mime
+        ]
 
         def write():
             directory, _ = self._paths(uid)
@@ -256,7 +294,9 @@ class ProfileService:
         _, path = self._paths(uid)
         # TTL 起点只在“页面读成功且素材都下全了”时前进：页面整个抓失败时
         # 保持原时间，下一轮扫描会继续重试；页面正常但主播没设头图不算失败。
-        hard_errors = [item for item in record["errors"] if not item.endswith("_missing")]
+        hard_errors = [
+            item for item in record["errors"] if not item.endswith("_missing")
+        ]
         if (asset or {}).get("ok") and not hard_errors:
             record["fetched_on"] = china_today().isoformat()
         record["fetched_at"] = datetime.now(CHINA).isoformat(timespec="seconds")
@@ -312,7 +352,11 @@ class ProfileService:
         if record and record.get("version") != PROFILE_VERSION:
             # 提取逻辑升级过：旧记录一律重读一次，否则漏判会一直留到 TTL 结束。
             return True
-        if record and (record.get("avatar") or record.get("header")) and is_fresh(record):
+        if (
+            record
+            and (record.get("avatar") or record.get("header"))
+            and is_fresh(record)
+        ):
             return False
         if record and record.get("attempted_on") == china_today().isoformat():
             # 今天已经试过但没拿到可用结果，等下一次扫描再重试。
@@ -350,7 +394,9 @@ class ProfileService:
                 continue
             mime = image_mime(raw)
             if mime and len(raw) <= ASSET_LIMIT:
-                result[kind] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                result[kind] = (
+                    f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                )
         return result
 
     async def run(self):
@@ -360,5 +406,7 @@ class ProfileService:
                 await self.refresh_stale()
             except Exception:
                 logger.warning("Unable to enumerate subscribed streamers for profiles")
-            delay = (next_sweep(datetime.now(CHINA)) - datetime.now(CHINA)).total_seconds()
+            delay = (
+                next_sweep(datetime.now(CHINA)) - datetime.now(CHINA)
+            ).total_seconds()
             await asyncio.sleep(max(1, delay) + random.uniform(0, SWEEP_JITTER_SECONDS))

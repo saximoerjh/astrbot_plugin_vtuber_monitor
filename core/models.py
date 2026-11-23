@@ -69,7 +69,10 @@ class VtuberState:
             raise ValueError("直播状态无效。")
         if not isinstance(self.live_title, str) or not isinstance(self.live_cover, str):
             raise ValueError("直播标题或封面无效。")
-        if self.live_started_at and datetime.fromisoformat(self.live_started_at).tzinfo is None:
+        if (
+            self.live_started_at
+            and datetime.fromisoformat(self.live_started_at).tzinfo is None
+        ):
             raise ValueError("开播时间必须包含时区。")
         if self.last_live_change_at is not None:
             if datetime.fromisoformat(self.last_live_change_at).tzinfo is None:
@@ -87,7 +90,11 @@ class DynamicPost:
 
     def __post_init__(self):
         object.__setattr__(self, "uid", validate_uid(self.uid))
-        if not isinstance(self.id, str) or not re.fullmatch(r"[0-9]{1,30}", self.id) or int(self.id) <= 0:
+        if (
+            not isinstance(self.id, str)
+            or not re.fullmatch(r"[0-9]{1,30}", self.id)
+            or int(self.id) <= 0
+        ):
             raise ValueError("动态 ID 无效。")
         if not isinstance(self.text, str):
             raise ValueError("动态正文无效。")
@@ -96,6 +103,7 @@ class DynamicPost:
         if type(self.is_pinned) is not bool:
             raise ValueError("置顶状态无效。")
         if not isinstance(self.images, tuple) or any(
-            not isinstance(url, str) or not url.startswith("https://") for url in self.images
+            not isinstance(url, str) or not url.startswith("https://")
+            for url in self.images
         ):
             raise ValueError("动态图片地址无效。")
