@@ -4,6 +4,14 @@
 
 <h1 align="center">astrbot_plugin_vtuber_monitor</h1>
 
+> 受够了这帮老是迟到躺着赚钱的懒狗管人？🤯
+>
+> 早早守在电脑前，却因为前段时间错过的一条直播时间调整动态，只能和同样倒霉的同担一起成为直播间留守grc?🤬
+>
+> 记错了周表，记不住周表，懒得翻周表，不知道周表有没有更新？👽
+>
+> 想看看这条懒狗这个星期迟到了几次？（一几一几）
+
 <p align="center">为 <a href="https://github.com/AstrBotDevs/AstrBot">AstrBot</a> 设计的 Bilibili VTuber 直播与周表追踪插件：订阅主播后自动推送上下播、解析并维护周表，必要时根据动态自动调播。为vibe coding得到的石山产物，当前只针对 <strong>VirtuaReal团体</strong> 进行过测试，正在debug以及图谋加入更多后续功能。。。</p>
 
 ## ✨ 功能特性
