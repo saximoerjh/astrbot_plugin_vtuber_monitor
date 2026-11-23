@@ -1,6 +1,23 @@
 name: astrbot_plugin_vtuber_monitor
-display_name: VTuber 直播与周表助手
-desc: 订阅直播通知、扫码登录、主播别名、周表图片与定时更新、自动调播、未兑现标记。（当前只针对VirtuaReal团体进行过测试，正在debug以及加入更多后续功能。。。）
+display_name: B站 VTuber 直播与周表助手
+short_desc: B站直播监控、开播提醒、周表解析与自动调播。
+desc: >-
+  订阅哔哩哔哩（Bilibili）虚拟主播，接收上下播通知，自动识别与更新直播周表，处理改期、取消和加播。
+  支持扫码登录、主播别名、周表图片和未兑现标记。目前仅针对 VirtuaReal 团体测试。
+tags:
+  - Bilibili
+  - B站直播
+  - VTuber
+  - vtb
+  - 虚拟主播
+  - VirtuaReal
+  - VituaReal
+  - vr
+  - 直播监控
+  - 直播订阅
+  - 开播提醒
+  - 直播周表
+  - 自动调播
 version: 0.7.45
 astrbot_version: ">=4.26,<5"
 author: hibiscus
