@@ -215,5 +215,32 @@ __marimo__/
 # 需求文档：只在本机保留，不随仓库分发
 /TASK.md
 
-# AstrBot 运行期目录：在插件目录里 import astrbot.core 时会就地生成
+# AstrBot 运行期数据、个人配置和缓存
 data/
+plugin_data/
+login_qr/
+schedule_images/
+notice_images/
+schedule_render/
+classify_tmp/
+profiles/
+logs/
+backups/
+*_config.json
+config.json
+config.local.json
+credentials.*
+cookies.*
+secrets.*
+.env.*
+
+# 本地数据库、事务文件和导出备份
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.sql
+*.dump
+*.bak
