@@ -96,7 +96,7 @@ python -m playwright install chromium
 | **bili_login** | (无) | 私聊扫码登录 Bilibili | 管理员 |
 | **vt_parse_schedule** | `<UID或别名> [本周\|上周\|下周\|YYYY-MM-DD]` | 手动解析周表，并建立定时检查基准（markdown） | 管理员 |
 | **vt_adjust_test** | `<UID或别名> <动态正文>` | 调播预演，不保存、不推送（markdown） | 管理员 |
-| **vt_retry_adjust** | `<UID或别名> <动态ID>` | 重试一条失败的调播 | 管理员 |
+| **vt_retry_adjust** | `<UID或别名> <动态ID>` | 重试本周一条失败的调播 | 管理员 |
 
 ### 关注级别与别名
 
@@ -125,7 +125,9 @@ python -m playwright install chromium
 
 上下播通知在**状态跳变时**发送一次：开播推「开播了」并附标题、封面与直播间链接，下播推「下播了」。改标题或换封面不会重复触发。
 
-上下播、周表更新和调播结果由独立的通知任务从数据库队列投递。周表推送与调播推送默认关闭，可在「通知内容」里开启。调播通知先发动态原图（最多 3 张）或整页截图，再发文字结果。多个会话复用附件，发送失败时从未送达的部分重试。图片取不到时仍会投递文字，部分送达情况可用 `/vt_status` 查看。
+上下播、周表更新和调播结果由独立的通知任务从数据库队列投递。周表推送与调播推送默认关闭，可在「通知内容」里开启。调播通知先发动态原图（最多 3 张）或整页截图，再发文字结果。多个会话复用附件，发送失败时从失败的部分重试。图片取不到时仍会投递文字，部分发送情况可用 `/vt_status` 查看。
+
+QQ 官方群会话在机器人重启后可能需要收到一条群消息来恢复路由。等待期间，该会话的通知保持在发送队列中，其他会话照常发送。
 
 ## ❓ 常见问题
 
@@ -164,6 +166,8 @@ python tests/dynamic_preview.py --variants
 ```
 
 运行期数据目录 `plugin_data/astrbot_plugin_vtuber_monitor/` 包含 `monitor.sqlite3`（订阅、周表、实际直播、通知队列）、`schedule_images/`（周表候选原图，定期清理）、`notice_images/`（通知附件，保留待发送附件和最近 200 张）、`profiles/`（头像与头图）、`schedule_render/`（周表图片缓存，最多 40 张）和 `login_qr/`。图片分类任务单独持有临时文件，读取完成后清理。
+
+扫码凭据保存在本机数据库中。Git 忽略运行期目录、数据库及事务文件、本机配置和登录二维码目录。
 
 仓库根目录的 `logo.png`（256×256）是 WebUI 插件卡片上的图标，AstrBot 按固定文件名读取，`metadata.yaml` 里没有对应字段；这张图由 `docs/4016_monitor.png` 裁出（脚本自动去掉四周同色留白），改 `tools/make_logo.py` 的 `SOURCE`／`RADIUS`／`PADDING` 再跑一次即可重新生成。
 

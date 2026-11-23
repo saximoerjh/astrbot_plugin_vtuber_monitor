@@ -1,6 +1,7 @@
 """把配置界面分组，同时保留运行期稳定的扁平选项名。"""
 import copy
 import json
+from functools import cache
 from pathlib import Path
 
 MERGED_PROVIDER_KEY = "multimodal_provider_id"
@@ -108,36 +109,37 @@ def merge_provider_selection(config):
     return True
 
 
-def prepare_config(config):
+@cache
+def _config_groups():
     schema = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
-    groups = {key: item for key, item in schema.items() if item["type"] == "object"}
+    return {key: item["items"] for key, item in schema.items() if item["type"] == "object"}
+
+
+def prepare_config(config):
+    groups = _config_groups()
+    changed = False
     if not config.get("_grouped_config_migrated", False):
-        for group, definition in groups.items():
+        for group, fields in groups.items():
             values = config.setdefault(group, {})
-            for key, field in definition["items"].items():
-                # AstrBot 会在插件初始化前补齐分组默认值，
-                # 隐藏的旧字段保留真实旧值，直到这次一次性迁移搬走。
-                if key in config:
+            for key, field in fields.items():
+                default = field["default"]
+                # AstrBot 补入的默认扁平值不能覆盖已经自定义的分组值。
+                if key in config and (key not in values or config[key] != default):
                     values[key] = copy.deepcopy(config[key])
                 else:
-                    values.setdefault(key, copy.deepcopy(field["default"]))
+                    values.setdefault(key, copy.deepcopy(default))
                 # 兼容用的隐藏槽位只保留结构里的默认值。
-                config[key] = copy.deepcopy(field["default"])
+                config[key] = copy.deepcopy(default)
         config["_grouped_config_migrated"] = True
-        if callable(getattr(config, "save_config", None)):
-            config.save_config()
-    if merge_provider_selection(config) and callable(getattr(config, "save_config", None)):
-        config.save_config()
-    if migrate_scan_times(config) and callable(getattr(config, "save_config", None)):
-        config.save_config()
-    if merge_adjustment_switches(config) and callable(getattr(config, "save_config", None)):
-        config.save_config()
-    if drop_manual_credentials(config) and callable(getattr(config, "save_config", None)):
+        changed = True
+    for migrate in (merge_provider_selection, migrate_scan_times, merge_adjustment_switches, drop_manual_credentials):
+        changed |= migrate(config)
+    if changed and callable(getattr(config, "save_config", None)):
         config.save_config()
     flat = {}
-    for group, definition in groups.items():
+    for group, fields in groups.items():
         values = config.get(group, {})
-        for key, field in definition["items"].items():
+        for key, field in fields.items():
             flat[key] = copy.deepcopy(values.get(key, field["default"]))
     return flat
 
@@ -151,7 +153,7 @@ def read_notification_flags(path):
     """
     try:
         flat = prepare_config(json.loads(Path(path).read_text(encoding="utf-8-sig")))
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     try:
         return {name: bool(flat[key]) for name, key in NOTIFICATION_KEYS.items()}

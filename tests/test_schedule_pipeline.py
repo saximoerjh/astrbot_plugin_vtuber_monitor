@@ -12,7 +12,6 @@ from astrbot_plugin_vtuber_monitor.bili_client import BiliClient
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost
 from astrbot_plugin_vtuber_monitor.core.schedule_models import china_today, explicit_week_hint, schedule_from_parser, parse_week_override
-from astrbot_plugin_vtuber_monitor.services.dynamic_listener import DynamicListener
 from astrbot_plugin_vtuber_monitor.services.schedule_discovery import ScheduleDiscovery
 from astrbot_plugin_vtuber_monitor.services.schedule_parser import ScheduleParser, ScheduleParseError
 from astrbot_plugin_vtuber_monitor.services.schedule_service import ScheduleService
@@ -206,16 +205,6 @@ async def test_history_archive_versions_query_and_current_isolation(tmp_path):
     assert (await history_only.get_weekly_schedule(1, start.isoformat()))["week_start"] == start.isoformat()
     with pytest.raises(ValueError):
         await service.get_weekly_schedule(1, "not-a-date")
-
-
-@pytest.mark.asyncio
-async def test_listener_passes_pinned_page_even_when_no_new_dynamics():
-    post = DynamicPost(1, "1", "周表", 0, ("https://i0.hdslb.com/a.png",), True)
-    data = SimpleNamespace(get_special_vtubers=AsyncMock(return_value=[1]), ingest_dynamics=AsyncMock(return_value=[]))
-    discovery = SimpleNamespace(scan=AsyncMock())
-    listener = DynamicListener(data, SimpleNamespace(get_latest_dynamics=AsyncMock(return_value=[post])), discovery=discovery)
-    await listener.poll_once()
-    discovery.scan.assert_awaited_once_with(1, [post])
 
 
 @pytest.mark.parametrize("payload,code", [({"status": "not_schedule"}, "not_schedule"),

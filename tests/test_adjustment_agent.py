@@ -2,12 +2,14 @@ import asyncio
 import json
 import time
 from dataclasses import replace
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot_plugin_vtuber_monitor.core.models import DynamicPost, VtuberState
+from astrbot_plugin_vtuber_monitor.core.schedule_models import china_week_start_timestamp
 from astrbot_plugin_vtuber_monitor.services.adjustment_agent import AdjustmentAgent
 from astrbot_plugin_vtuber_monitor.services.dynamic_listener import DynamicListener
 from astrbot_plugin_vtuber_monitor.services.dispatcher import Dispatcher
@@ -19,7 +21,7 @@ def post(text="今晚歌回推迟到21:00", id="101"):
 
 
 def agent(service, names=None, args=None):
-    context = SimpleNamespace(llm_generate=AsyncMock(return_value=SimpleNamespace(
+    context = SimpleNamespace(get_provider_by_id=lambda name: object(), llm_generate=AsyncMock(return_value=SimpleNamespace(
         tools_call_name=names or [], tools_call_args=args or [])))
     return AdjustmentAgent(context, service, "test", tool_factory=lambda: "PRIVATE_TOOLS")
 
@@ -86,22 +88,48 @@ async def test_committed_jobs_survive_network_failure_restart_and_bounded_retrie
     await data.add_subscription(VtuberState(1, "one"), "group", "special", initial_dynamics=[])
     await data.ingest_dynamics(1, [post(id="101"), post(id="102")])
     assert (await data.get_dynamic_checkpoint(1))["latest_id"] == "102"
-    fake = SimpleNamespace(process=AsyncMock(side_effect=ValueError("model down")))
-    client = SimpleNamespace(get_latest_dynamics=AsyncMock(side_effect=TimeoutError()))
+    fake = SimpleNamespace(provider_available=lambda: True, schedules=service,
+                           process=AsyncMock(side_effect=ValueError("model down")))
+    client = SimpleNamespace(get_dynamics_since=AsyncMock(side_effect=TimeoutError()))
     listener = DynamicListener(data, client, adjustment=fake)
     for _ in range(3):
         await listener.poll_once()
+        await listener.process_pending()
     assert [j["dynamic_id"] for j in await data.pending_adjustments(1)] == ["102"]
     assert (await data.get_work_status())["adjustment_jobs"]["failed"] == 1
     fake.process.side_effect = None
-    await listener.poll_once()
+    await listener.process_pending()
     assert not await data.pending_adjustments(1)
     assert fake.process.await_count == 4
     assert await service.retry_adjustment(1, "101")
     assert not await service.retry_adjustment(1, "102")
-    await listener.poll_once()
+    await listener.process_pending()
     assert not await data.pending_adjustments(1)
     assert fake.process.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_old_adjustments_expire_at_beijing_week_boundary(tmp_path, monkeypatch):
+    today = date(2026, 11, 23)
+    monkeypatch.setattr("astrbot_plugin_vtuber_monitor.core.data_manager.china_today", lambda: today)
+    cutoff = china_week_start_timestamp(today)
+    data, service, _ = await setup_schedule(tmp_path)
+    await data.add_subscription(VtuberState(1, "one"), "group", "special", initial_dynamics=[])
+    await data.ingest_dynamics(1, [
+        replace(post(id="101"), published_at=cutoff - 1),
+        replace(post(id="102"), published_at=cutoff - 2),
+        replace(post(id="103"), published_at=cutoff),
+    ])
+    for _ in range(3):
+        await data.finish_adjustment(1, "101", False, error="test retry")
+    with pytest.raises(ValueError, match="周次已结束"):
+        await service.retry_adjustment(1, "101")
+    await data.expire_adjustments()
+    await data.expire_adjustments()
+    assert (await data.get_work_status())["adjustment_jobs"] == {"expired": 2, "pending": 1}
+    assert [job["dynamic_id"] for job in await data.pending_adjustments(1)] == ["103"]
+    with pytest.raises(ValueError, match="周次已结束"):
+        await service.retry_adjustment(1, "102")
 
 
 @pytest.mark.asyncio
@@ -143,10 +171,13 @@ async def test_full_dynamic_tool_revision_and_notification_pipeline(tmp_path):
     context = SimpleNamespace(send_message=AsyncMock(return_value=True))
     dispatcher = Dispatcher(context, message_factory=lambda t: t)
     dispatcher.adjustment_enabled = True
-    client = SimpleNamespace(get_latest_dynamics=AsyncMock(return_value=[post("临时取消歌回")]))
-    listener = DynamicListener(data, client, adjustment=instance, dispatcher=dispatcher)
+    client = SimpleNamespace(get_dynamics_since=AsyncMock(return_value=[post("临时取消歌回")]))
+    listener = DynamicListener(data, client, adjustment=instance)
     await listener.poll_once()
+    await listener.process_pending()
     await listener.poll_once()
+    await listener.process_pending()
+    await dispatcher.flush_schedule_notifications(data)
     instance.context.llm_generate.assert_awaited_once()
     context.send_message.assert_awaited_once()
     assert context.send_message.await_args.args[0] == "group"

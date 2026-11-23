@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.star.filter.command import GreedyStr
 
 from .bili_client import BiliClient, BiliError
@@ -58,11 +58,11 @@ def markdown_reply(event, text):
     return result
 
 
-@register(PLUGIN_NAME, "hibiscus", "Bilibili VTuber 直播与周表追踪", "0.7.45")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = prepare_config(config)
+        self.config_path = getattr(config, "config_path", None)
         self.bili = None
         self.subscriptions = None
         self.live_listener = None
@@ -91,9 +91,21 @@ class MyPlugin(Star):
     async def initialize(self):
         if self.live_listener is not None:
             return
+        try:
+            await self._initialize()
+            # WebChat is added after AstrBot initializes its providers and platforms.
+            # On hot reload the startup hook has already fired.
+            if self.context.get_platform_inst("webchat") is not None:
+                self._start_tasks()
+        except BaseException:
+            await self.terminate()
+            raise
+
+    async def _initialize(self):
         data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         data = DataManager(data_dir)
         await data.initialize()
+        await data.expire_adjustments()
         self.targets = TargetService(data)
         self.greeting = GreetingService(
             self.context, data,
@@ -102,7 +114,8 @@ class MyPlugin(Star):
         self.screenshot = screenshot
         self.schedule_renderer = ScheduleRenderer(
             data_dir, channel=self.config.get("screenshot_browser_channel", "auto"))
-        self.config_path = Path(data_dir).parents[1] / "config" / f"{PLUGIN_NAME}_config.json"
+        if self.config_path is None:
+            self.config_path = Path(data_dir).parents[1] / "config" / f"{PLUGIN_NAME}_config.json"
         self.dispatcher = Dispatcher(
             self.context,
             normal_start=self.config.get("normal_live_start_push", True),
@@ -112,12 +125,6 @@ class MyPlugin(Star):
             flags_provider=self._notification_flags,
             notice_image=self._adjustment_notice_image,
         )
-        listener = LiveListener(data, None, self.dispatcher,
-                                float(self.config.get("live_poll_interval", 120)),
-                                float(self.config.get("live_poll_jitter", 60)),
-                                special_only=not self.config.get("enable_live_polling", False), queued=True)
-        dynamic_listener = DynamicListener(data, None,
-                                          float(self.config.get("dynamic_poll_interval", 300)))
         self.dispatcher.schedule_enabled = bool(self.config.get("enable_schedule_push", False))
         self.dispatcher.adjustment_enabled = bool(self.config.get("enable_adjustment_push", False))
         self.live_recorder = LiveScheduleRecorder(
@@ -133,22 +140,14 @@ class MyPlugin(Star):
             self.context, self.schedules,
             self.config.get("multimodal_provider_id", ""),
             self.config.get("adjustment_regex", DEFAULT_ADJUSTMENT_REGEX))
-        if self.config.get("auto_adjustment_with_schedule", True):
-            dynamic_listener.adjustment = self.adjustment
-        dynamic_listener.require_schedule = True
-        # 先采集动态；周表或模型不可用时保留调播任务，等条件满足再处理。
         self.bili = BiliClient(
             timeout=float(self.config.get("request_timeout", 10)),
             max_retry=self.config.get("max_retry", 2),
             get_cached_state=data.get_vtuber_state,
         )
-        try:
-            saved_credentials = await data.get_credentials()
-            if saved_credentials:
-                self.bili.set_credentials(saved_credentials)
-        except Exception:
-            await self.bili.close()
-            raise
+        saved_credentials = await data.get_credentials()
+        if saved_credentials:
+            self.bili.set_credentials(saved_credentials)
         parser = ScheduleParser(self.context, self.config.get("multimodal_provider_id", ""))
         self.discovery = ScheduleDiscovery(data, self.bili, parser, self.schedules,
                                            self.config.get("schedule_keywords", list(DEFAULT_KEYWORDS)))
@@ -162,12 +161,23 @@ class MyPlugin(Star):
             data, self.bili, channel=self.config.get("screenshot_browser_channel", "auto"))
         self.pinned = PinnedService(self.bili, screenshot, ScheduleImageSelector(data, self.bili, parser))
         self.subscriptions = SubscriptionService(data, self.bili, self.discovery)
-        listener.bili = self.bili
-        listener.schedule_recorder = self.live_recorder
-        self.live_listener = listener
-        dynamic_listener.bili = self.bili
-        self.dynamic_listener = dynamic_listener
-        self._start_tasks()
+        self.live_listener = LiveListener(
+            data, self.bili,
+            float(self.config.get("live_poll_interval", 120)),
+            float(self.config.get("live_poll_jitter", 60)),
+            special_only=not self.config.get("enable_live_polling", False),
+            schedule_recorder=self.live_recorder,
+        )
+        self.dynamic_listener = DynamicListener(
+            data, self.bili,
+            float(self.config.get("dynamic_poll_interval", 300)),
+            adjustment=self.adjustment if self.config.get("auto_adjustment_with_schedule", True) else None,
+        )
+
+    @filter.on_astrbot_loaded()
+    async def on_astrbot_loaded(self):
+        if self.live_listener is not None:
+            self._start_tasks()
 
     async def _notification_flags(self):
         """给 Dispatcher 用：每次发送前重读配置文件，改完开关立刻生效。"""
@@ -211,7 +221,7 @@ class MyPlugin(Star):
         ):
             self.live_listener_task = asyncio.create_task(
                 self.live_listener.run(), name="vtuber-monitor-live")
-            if self.live_listener.queued and self.live_reconciliation_task is None:
+            if self.live_reconciliation_task is None:
                 self.live_reconciliation_task = asyncio.create_task(
                     self.live_listener.run_reconciliation(), name="vtuber-monitor-live-reconciliation")
         if self.config.get("auto_adjustment_with_schedule", True) and (
@@ -233,6 +243,10 @@ class MyPlugin(Star):
                 await self.targets.data.prune_schedule_images(protect_recent=True)
             except Exception as exc:
                 logger.warning("VTuber image retention failed type=%s", type(exc).__name__)
+            try:
+                await self.targets.data.expire_adjustments()
+            except Exception as exc:
+                logger.warning("VTuber adjustment expiration failed type=%s", type(exc).__name__)
             await asyncio.sleep(3600)
 
     @filter.command("vt_ping")
@@ -324,7 +338,7 @@ class MyPlugin(Star):
         try:
             uid = await self._resolve_target(event, uid)
             await self.subscriptions.change_level(uid, event.unified_msg_origin, level, user_id=event.get_sender_id())
-            text = f"关注级别已更新为 {level}。动态轮询状态请查看 /vt_status。"
+            text = f"关注级别已更新为 {level}。动态采集和调播状态请查看 /vt_status。"
         except (ValueError, BiliError) as exc:
             text = str(exc)
         except Exception:
@@ -580,10 +594,13 @@ class MyPlugin(Star):
         if not event.is_admin():
             yield event.plain_result("仅管理员可以重试调播任务。")
             return
+        if self.dynamic_listener.adjustment is None:
+            yield event.plain_result("请先在插件设置中开启「有周表时自动调播」。")
+            return
         try:
             uid = await self._resolve_target(event, uid)
             changed = await self.schedules.retry_adjustment(uid, dynamic_id)
-            yield event.plain_result("已排入重试队列，需启用动态轮询和自动调播。" if changed else "未找到对应的失败任务。")
+            yield event.plain_result("已排入重试队列，配置模型并拥有本周周表后会处理。" if changed else "未找到对应的失败任务。")
         except ValueError as exc:
             yield event.plain_result(str(exc))
 
@@ -623,7 +640,7 @@ class MyPlugin(Star):
     async def vt_status(self, event: AstrMessageEvent):
         """查看监听状态和本次运行的计数。"""
         listener = self.live_listener
-        if self.targets is None:
+        if self.bili is None:
             # 初始化没跑完时没有任何子系统可报告。
             yield event.plain_result("插件尚未初始化完成，暂无状态可报；若持续如此请查看插件日志。")
             return
@@ -636,7 +653,9 @@ class MyPlugin(Star):
                 watch_errors.append(f"UID {uid}：{tracked['error']}\nhttps://t.bilibili.com/{tracked['dynamic_id']}")
         # 直播监听未启用时不再提前结束：其余子系统照常汇报，只有监听相关的行退化成一行。
         # 输出按 markdown 组织：QQ 官方机器人会渲染成带样式的卡片，其余平台读起来也是普通文本。
-        lines = ["## VTuber Monitor 0.7.45", ""]
+        metadata = self.context.get_registered_star(PLUGIN_NAME)
+        version = f" {metadata.version}" if metadata and metadata.version else ""
+        lines = [f"## VTuber Monitor{version}", ""]
         if listener is None:
             lines.append("**直播监听**：未启用")
         else:
@@ -696,7 +715,7 @@ class MyPlugin(Star):
                 f"**周表推送**：{'开启' if self.dispatcher.schedule_enabled else '关闭'}"
                 f"；调播推送：{'开启' if self.dispatcher.adjustment_enabled else '关闭'}"
                 f"；发送任务：{'运行中' if self.notification_task and not self.notification_task.done() else '未运行'}"
-                f"；最近送达：{local_time(self.dispatcher.last_success_at)}")
+                f"；最近平台发送成功：{local_time(self.dispatcher.last_success_at)}")
             if self.dispatcher.last_error:
                 lines.append(f"- 最近队列错误：{self.dispatcher.last_error}")
         for name, table in (("调播任务", "adjustment_jobs"), ("通知任务", "schedule_outbox")):
@@ -705,7 +724,9 @@ class MyPlugin(Star):
             value = (f"待处理 {counts.get('pending', 0)}、已完成 {counts.get('done', 0)}、"
                      f"失败 {counts.get('failed', 0)}")
             if table == "schedule_outbox":
-                value += f"、部分送达 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
+                value += f"、部分发送 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
+            else:
+                value += f"、已过期 {counts.get('expired', 0)}"
             if counts.get("pending"):
                 value += f"；最早入队 {local_time(oldest) if oldest else '旧记录未留时间'}"
             lines.append(f"- {name}：{value}")
@@ -759,10 +780,14 @@ class MyPlugin(Star):
                 await service.close()
             except Exception:
                 logger.warning("VTuber %s service did not close cleanly", label)
-        if self.bili is not None:
+        bili, self.bili = self.bili, None
+        if bili is not None:
             try:
-                await self.bili.close()
+                await bili.close()
             except Exception:
                 logger.warning("Unable to close Bilibili client cleanly")
         self.live_listener = None
         self.dynamic_listener = None
+        self.subscriptions = None
+        self.pinned = None
+        self.login = None

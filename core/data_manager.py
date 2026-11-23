@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .models import DynamicPost, FollowLevel, Subscription, VtuberState, utc_now, validate_uid, validate_umo
-from .schedule_models import china_today
+from .schedule_models import china_today, china_week_start_timestamp
 
 # live_sessions.synced 是一个小状态机：待落位、已写入周表、
 # 因为永远无法确定开播时间而退役，或因为开播太短被判定为无效。
@@ -170,7 +170,7 @@ class DataManager:
                     "schedule_outbox": {
                         "created_at": "TEXT", "next_part": "INTEGER NOT NULL DEFAULT 0",
                         "source_id": "TEXT NOT NULL DEFAULT ''", "last_error": "TEXT NOT NULL DEFAULT ''",
-                        "partial_reason": "TEXT NOT NULL DEFAULT ''",
+                        "partial_reason": "TEXT NOT NULL DEFAULT ''", "retry_at": "TEXT NOT NULL DEFAULT ''",
                     },
                     "adjustment_jobs": {"created_at": "TEXT", "last_error": "TEXT NOT NULL DEFAULT ''"},
                     "dynamic_checkpoints": {"floor_id": "TEXT NOT NULL DEFAULT '0'"},
@@ -183,6 +183,7 @@ class DataManager:
                         db.execute("""UPDATE dynamic_checkpoints SET floor_id=COALESCE(
                             (SELECT dynamic_id FROM dynamic_posts WHERE uid=dynamic_checkpoints.uid AND is_baseline
                              ORDER BY length(dynamic_id) DESC, dynamic_id DESC LIMIT 1), '0')""")
+                db.execute("CREATE INDEX IF NOT EXISTS outbox_pending_by_session ON schedule_outbox(umo, id) WHERE state='pending'")
                 from .schedule_migration import migrate_schedule_times
                 migrate_schedule_times(db)
             self._run(migrate)
@@ -299,27 +300,13 @@ class DataManager:
             return str(path.resolve())
         return await asyncio.to_thread(write)
 
-    async def save_classification_image(self, content, *, directory=None):
-        """只给"这张图是不是周表"判定用的临时图。
-
-        判定用的图不是候选原图，不该进 `schedule_images/` 占位置；放进
-        `classify_tmp/`，由 prune_schedule_images 每轮扫描后整目录清掉。
-        """
-        directory = directory or self.path.parent / "classify_tmp"
-        path = directory / f"{hashlib.sha256(content).hexdigest()}{image_suffix(content)}"
-        def write():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            temporary.write_bytes(content)
-            os.replace(temporary, path)
-            return str(path.resolve())
-        return await asyncio.to_thread(write)
-
     @asynccontextmanager
     async def classification_image(self, content):
         """独占临时文件，保留到读取方完成。"""
         with TemporaryDirectory(prefix="vt-classify-") as directory:
-            yield await self.save_classification_image(content, directory=Path(directory))
+            path = Path(directory) / ("candidate" + image_suffix(content))
+            await asyncio.to_thread(path.write_bytes, content)
+            yield str(path)
 
     async def prune_schedule_images(self, *, keep_weeks=4, grace_days=7, today=None,
                                     keep_notices=200, protect_recent=False):
@@ -328,7 +315,7 @@ class DataManager:
         保留三类：最近 keep_weeks 周里被判为周表的候选图（parsed/unchanged/archived）、
         这些周归档周表引用的原图、以及 grace_days 天内新写入的任何候选图。
         其余（孤儿图、以及过期的不合格候选图）删除，并把候选行里指向已删文件的
-        路径清空，避免留下悬空路径。判定用的临时目录每轮整目录清空。
+        路径清空，同时修复旧周表中已失效的本地路径。清理旧版分类临时目录。
         通知附带的动态图只按数量保留最近 keep_notices 张。
         """
         if keep_weeks < 0 or grace_days < 0 or keep_notices < 0:
@@ -347,6 +334,7 @@ class DataManager:
                 return True
 
         def prune(db):
+            db.execute("BEGIN IMMEDIATE")
             protected, clearable = set(), []
             for row in db.execute("SELECT payload FROM schedule_tracking"):
                 # 定时扫描的"待确认周次"任务还要用这张图重试解析，不能当垃圾清掉。
@@ -368,7 +356,7 @@ class DataManager:
                 if recognized or within_grace(payload.get("checked_at")):
                     protected.add(name)
                 else:
-                    clearable.append((row["uid"], row["dynamic_id"], row["image_url"], name))
+                    clearable.append((row, payload))
             freed, removed = 0, set()
             if images.is_dir():
                 for path in images.iterdir():
@@ -379,18 +367,39 @@ class DataManager:
                     freed += path.stat().st_size
                     path.unlink(missing_ok=True)
                     removed.add(path.name)
-            for uid, dynamic_id, image_url, name in clearable:
-                if name not in removed:
+            image_directory = images.resolve()
+
+            def missing_image(value):
+                path = Path(value)
+                return path.is_absolute() and path.parent.resolve() == image_directory and not path.is_file()
+
+            for row, payload in clearable:
+                if not missing_image(payload["local_image_path"]):
                     continue
-                row = db.execute("SELECT payload FROM schedule_candidates"
-                                 " WHERE uid=? AND dynamic_id=? AND image_url=?",
-                                 (uid, dynamic_id, image_url)).fetchone()
-                if row is None:
-                    continue
-                payload = json.loads(row["payload"])
                 payload["local_image_path"] = ""
                 db.execute("UPDATE schedule_candidates SET payload=? WHERE uid=? AND dynamic_id=? AND image_url=?",
-                           (json.dumps(payload, ensure_ascii=False), uid, dynamic_id, image_url))
+                           (json.dumps(payload, ensure_ascii=False), row["uid"], row["dynamic_id"], row["image_url"]))
+            for table, identity, week_column in (
+                ("weekly_schedule_archive", "id", "week_start"),
+                ("weekly_schedules", "uid", "json_extract(payload,'$.week_start')"),
+            ):
+                rows = db.execute(f"""SELECT {identity}, payload FROM {table}
+                    WHERE {week_column}<?
+                    AND json_extract(payload,'$.local_image_path')<>''""", (cutoff,)).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    if not missing_image(payload["local_image_path"]):
+                        continue
+                    payload["local_image_path"] = ""
+                    serialized = json.dumps(payload, ensure_ascii=False)
+                    if table == "weekly_schedule_archive":
+                        digest = hashlib.sha256(serialized.encode()).hexdigest()
+                        updated = db.execute("UPDATE OR IGNORE weekly_schedule_archive SET payload=?,content_hash=? WHERE id=?",
+                                             (serialized, digest, row[identity]))
+                        if updated.rowcount:
+                            continue
+                        # 两个旧快照清理后可能相同，保留两条记录及其归档身份。
+                    db.execute(f"UPDATE {table} SET payload=? WHERE {identity}=?", (serialized, row[identity]))
             scratch_files = 0
             if scratch.is_dir():
                 for path in scratch.iterdir():
@@ -621,29 +630,64 @@ class DataManager:
             (validate_uid(uid), operation_id)).fetchone() is not None)
 
     async def pending_adjustments(self, uid):
+        cutoff = china_week_start_timestamp(china_today())
         return await asyncio.to_thread(self._run, lambda db: [dict(row) for row in db.execute(
-            "SELECT * FROM adjustment_jobs WHERE uid=? AND state='pending' ORDER BY length(dynamic_id), dynamic_id LIMIT 20",
-            (validate_uid(uid),))])
+            """SELECT * FROM adjustment_jobs WHERE uid=? AND state='pending'
+               AND COALESCE(json_extract(payload,'$.published_at'), ?) >= ?
+               ORDER BY length(dynamic_id), dynamic_id LIMIT 20""", (validate_uid(uid), cutoff, cutoff))])
 
     async def finish_adjustment(self, uid, dynamic_id, success, *, payload=None, error=""):
         await asyncio.to_thread(self._run, lambda db: db.execute(
             """UPDATE adjustment_jobs SET attempts=attempts+1, last_error=?,
                state=CASE WHEN ? THEN 'done' WHEN attempts>=2 THEN 'failed' ELSE 'pending' END
-               WHERE uid=? AND dynamic_id=? AND (? IS NULL OR payload=?)""",
+               WHERE uid=? AND dynamic_id=? AND state='pending' AND (? IS NULL OR payload=?)""",
             (error, success, validate_uid(uid), dynamic_id, payload, payload)))
 
+    async def expire_adjustments(self):
+        cutoff = china_week_start_timestamp(china_today())
+        await asyncio.to_thread(self._run, lambda db: db.execute(
+            """UPDATE adjustment_jobs SET state='expired'
+               WHERE state IN ('pending', 'failed') AND json_extract(payload,'$.published_at')<?""",
+            (cutoff,)))
+
     async def retry_adjustment(self, uid, dynamic_id):
-        return await asyncio.to_thread(self._run, lambda db: db.execute(
-            "UPDATE adjustment_jobs SET attempts=0, state='pending', last_error='' WHERE uid=? AND dynamic_id=? AND state='failed'",
-            (validate_uid(uid), dynamic_id)).rowcount > 0)
+        uid = validate_uid(uid)
+        cutoff = china_week_start_timestamp(china_today())
+
+        def retry(db):
+            db.execute("BEGIN IMMEDIATE")
+            job = db.execute("""SELECT state, json_extract(payload,'$.published_at') AS published_at
+                                FROM adjustment_jobs WHERE uid=? AND dynamic_id=?""", (uid, dynamic_id)).fetchone()
+            if job is None:
+                return False
+            if job["state"] == "expired" or (
+                job["state"] in ("pending", "failed") and job["published_at"] is not None and job["published_at"] < cutoff
+            ):
+                raise ValueError("这条动态所属的北京时间周次已结束，无法重试自动调播。")
+            return db.execute(
+                "UPDATE adjustment_jobs SET attempts=0, state='pending', last_error='' WHERE uid=? AND dynamic_id=? AND state='failed'",
+                (uid, dynamic_id)).rowcount > 0
+
+        return await asyncio.to_thread(self._run, retry)
 
     async def pending_notifications(self):
+        now = utc_now()
         return await asyncio.to_thread(self._run, lambda db: [dict(row) for row in db.execute(
-            "SELECT * FROM schedule_outbox WHERE state='pending' ORDER BY id LIMIT 50")])
+            """SELECT job.* FROM schedule_outbox AS job
+               WHERE job.state='pending' AND job.retry_at<=? AND NOT EXISTS (
+                   SELECT 1 FROM schedule_outbox AS earlier WHERE earlier.umo=job.umo
+                   AND earlier.state='pending' AND earlier.id<job.id AND earlier.retry_at>?
+               ) ORDER BY job.id LIMIT 50""", (now, now))])
+
+    async def defer_notification(self, notification_id, error):
+        retry_at = (datetime.now(timezone.utc) + timedelta(seconds=15)).isoformat()
+        await asyncio.to_thread(self._run, lambda db: db.execute(
+            "UPDATE schedule_outbox SET retry_at=?, last_error=? WHERE id=? AND state='pending'",
+            (retry_at, error, notification_id)))
 
     async def finish_notification(self, notification_id, success, *, error=""):
         await asyncio.to_thread(self._run, lambda db: db.execute(
-            """UPDATE schedule_outbox SET attempts=attempts+1, last_error=COALESCE(NULLIF(?,''),partial_reason),
+            """UPDATE schedule_outbox SET attempts=attempts+1, retry_at='', last_error=COALESCE(NULLIF(?,''),partial_reason),
                state=CASE WHEN ? THEN CASE WHEN partial_reason='' THEN 'done' ELSE 'partial' END
                WHEN attempts>=4 THEN 'failed' ELSE 'pending' END WHERE id=?""",
             (error, success, notification_id)))
@@ -679,7 +723,7 @@ class DataManager:
                 f"SELECT MIN(created_at) FROM {table} WHERE state='pending'").fetchone()[0]
                 for table in ("adjustment_jobs", "schedule_outbox")}
             status["latest_errors"] = {table: (row[0] if (row := db.execute(
-                f"SELECT last_error FROM {table} WHERE last_error<>'' ORDER BY rowid DESC LIMIT 1").fetchone()) else "")
+                f"SELECT last_error FROM {table} WHERE last_error<>'' AND state<>'expired' ORDER BY rowid DESC LIMIT 1").fetchone()) else "")
                 for table in ("adjustment_jobs", "schedule_outbox")}
             sessions = {r["synced"]: r["n"] for r in db.execute(
                 "SELECT synced, COUNT(*) AS n FROM live_sessions GROUP BY synced")}

@@ -13,7 +13,7 @@ TOOL_FIELDS = {
 
 
 def build_toolset():
-    from astrbot.core.agent.tool import FunctionTool, ToolSet
+    from astrbot.api import FunctionTool, ToolSet
     tools = []
     for name, (description, required, optional) in TOOL_FIELDS.items():
         properties = {field: {"type": "string"} for field in (*required, *optional)}

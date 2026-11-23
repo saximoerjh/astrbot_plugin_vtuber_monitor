@@ -35,6 +35,11 @@ def test_legacy_config_migrates_once_without_resetting_values():
     assert prepare_config(config)["request_timeout"] == 15
 
 
+def test_grouped_custom_setting_survives_default_legacy_slot():
+    config = {"live": {"live_poll_interval": 180}, "live_poll_interval": 120}
+    assert prepare_config(config)["live_poll_interval"] == 180
+
+
 def test_three_provider_settings_merge_into_one_without_losing_the_value():
     """历史上分开的三个模型选择合并成一个；旧值按优先级保留，只处理一次。"""
     config = {"_grouped_config_migrated": True,

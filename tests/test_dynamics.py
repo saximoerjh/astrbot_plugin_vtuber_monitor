@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -13,7 +14,7 @@ from astrbot_plugin_vtuber_monitor.services.subscription_service import Subscrip
 
 
 def post(id, uid=1):
-    return DynamicPost(uid, str(id), "本周安排", 1700000000)
+    return DynamicPost(uid, str(id), "本周安排", int(time.time()))
 
 
 def item(id):
@@ -121,7 +122,7 @@ async def test_special_baseline_new_pages_restart_and_pins(tmp_path):
     await service.subscribe(1, "a", "special")
     assert (await data.get_dynamic_checkpoint(1))["latest_id"] == "20"
     listener = DynamicListener(data, client)
-    client.get_latest_dynamics.return_value = [post(30), post(5), post(21), post(30)]
+    client.get_dynamics_since.return_value = [post(30), post(5), post(21), post(30)]
     await listener.poll_once()
     assert listener.received == 2
     await listener.poll_once()
@@ -151,11 +152,11 @@ async def test_empty_baseline_failure_isolation_and_normal_skipped(tmp_path):
     await data.add_subscription(VtuberState(2, "two"), "a", "special", initial_dynamics=[])
     await data.add_subscription(VtuberState(3, "normal"), "a")
     client = AsyncMock()
-    client.get_latest_dynamics.side_effect = [BiliError("412"), [post(10, 2)]]
+    client.get_dynamics_since.side_effect = [BiliError("412"), [post(10, 2)]]
     listener = DynamicListener(data, client)
     await listener.poll_once()
     assert listener.failures == 1 and listener.received == 1
-    assert client.get_latest_dynamics.await_count == 2
+    assert client.get_dynamics_since.await_count == 2
     assert (await data.get_dynamic_checkpoint(1))["latest_id"] == "0"
     assert (await data.get_dynamic_checkpoint(2))["latest_id"] == "10"
     with pytest.raises(ValueError):
@@ -189,10 +190,10 @@ async def test_first_poll_silent_atomic_dedup_and_cancellation(tmp_path):
     assert sum(len(result) for result in results) == 1
     client = AsyncMock()
     entered = asyncio.Event()
-    async def hang(uid):
+    async def hang(uid, latest_id):
         entered.set()
         await asyncio.Event().wait()
-    client.get_latest_dynamics.side_effect = hang
+    client.get_dynamics_since.side_effect = hang
     listener = DynamicListener(data, client)
     task = asyncio.create_task(listener.run())
     await asyncio.wait_for(entered.wait(), 1)

@@ -27,9 +27,10 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
     modules["astrbot.api"].logger = logging.getLogger(__name__)
     modules["astrbot.api.event"].AstrMessageEvent = object
     modules["astrbot.api.event"].filter = SimpleNamespace(command=decorator, permission_type=decorator,
+                                                        on_astrbot_loaded=decorator,
                                                         PermissionType=SimpleNamespace(ADMIN="admin"))
     star = modules["astrbot.api.star"]
-    star.Context, star.Star, star.register = object, Star, decorator
+    star.Context, star.Star = object, Star
     star.StarTools = SimpleNamespace(get_data_dir=lambda name: tmp_path)
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -47,24 +48,30 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
 
     event = SimpleNamespace(unified_msg_origin="qq:GroupMessage:123", plain_result=Result,
                             image_result=lambda path: ("image", path), get_sender_id=lambda: "user1")
-    plugin = main.MyPlugin(object(), {"auto_special_live": False, "auto_adjustment_with_schedule": False,
+    context = SimpleNamespace(get_platform_inst=lambda _: None,
+                              get_registered_star=lambda _: SimpleNamespace(version="1.2.3"))
+    plugin = main.MyPlugin(context, {"auto_special_live": False, "auto_adjustment_with_schedule": False,
                                       "schedule_image_enabled": False})
     try:
         # 初始化没跑完时只报整体状态，不点名某个子系统。
         assert "尚未初始化" in ([x async for x in plugin.vt_status(event)])[0]
         await plugin.initialize()
+        bili = plugin.bili
+        assert plugin.notification_task is None
+        await plugin.on_astrbot_loaded()
+        assert plugin.notification_task is not None
         assert plugin.live_listener_task is None
         assert "未启用" in ([x async for x in plugin.vt_status(event)])[0]
         # 状态里要能看到当前实际生效的通知开关。
         status = ([x async for x in plugin.vt_status(event)])[0]
         assert "通知开关" in status and status.markdown is True      # 按 markdown 发
-        assert status.startswith("## VTuber Monitor")                # 标题行
+        assert status.startswith("## VTuber Monitor 1.2.3")          # 版本来自 AstrBot 元数据
         # 直播监听缺失时不能提前结束，其余子系统必须照常汇报。
         saved_listener = plugin.live_listener
         plugin.live_listener = None
         degraded = ([x async for x in plugin.vt_status(event)])[0]
         assert "**直播监听**：未启用" in degraded
-        assert "**实际直播**：" in degraded and "发送成功：" in degraded
+        assert "**实际直播**：" in degraded and "最近平台发送成功：" in degraded
         # 队列计数不能再把状态字典原样打出来。
         assert "调播任务" in degraded and "{" not in degraded
         plugin.live_listener = saved_listener
@@ -139,6 +146,8 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         assert plugin.adjustment.process.await_args.args[0].uid == 456
         assert plugin.adjustment.process.await_args.kwargs == {"dry_run": True}
         plugin.schedules.retry_adjustment.return_value = True
+        assert "开启" in ([x async for x in plugin.vt_retry_adjust(event, "小路", "100")])[0]
+        plugin.dynamic_listener.adjustment = plugin.adjustment
         assert "重试队列" in ([x async for x in plugin.vt_retry_adjust(event, "小路", "100")])[0]
         plugin.schedules.retry_adjustment.assert_awaited_once_with(456, "100")
         event.is_admin = lambda: False
@@ -261,4 +270,4 @@ async def test_command_routing_and_lifecycle(monkeypatch, tmp_path):
         await plugin.terminate()
         await plugin.terminate()
         sys.modules.pop(module_name, None)
-    assert plugin.bili.http.is_closed
+    assert plugin.bili is None and bili.http.is_closed

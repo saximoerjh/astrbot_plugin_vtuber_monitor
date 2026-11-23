@@ -7,6 +7,7 @@ import pytest
 
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
 from astrbot_plugin_vtuber_monitor.core.models import VtuberState
+from astrbot_plugin_vtuber_monitor.core.models import utc_now
 from astrbot_plugin_vtuber_monitor.services.dispatcher import Dispatcher
 from test_schedule_service import setup_schedule
 
@@ -55,6 +56,39 @@ async def test_unsubscribed_and_disabled_destinations_dropped(tmp_path):
     await dispatcher.flush_schedule_notifications(data)
     dispatcher.context.send_message.assert_not_awaited()
     assert not await data.pending_notifications()
+
+
+@pytest.mark.asyncio
+async def test_qq_group_wait_does_not_consume_retries_or_block_other_sessions(tmp_path, monkeypatch):
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
+    group = "qq:GroupMessage:user_group"
+    friend = "qq:FriendMessage:friend"
+    for umo in (group, friend):
+        await data.add_subscription(VtuberState(1, "one"), umo, "special")
+    await service.cancel_stream(1, schedule.streams[0].id, "取消")
+    queued = {job["umo"]: job for job in await data.pending_notifications()}
+    adapter = SimpleNamespace(
+        meta=lambda: SimpleNamespace(name="qq_official"),
+        _session_last_message_id={}, _session_scene={}, _allow_group_proactive_send=True)
+    context = SimpleNamespace(get_platform_inst=lambda _: adapter, send_message=AsyncMock(return_value=True))
+    dispatcher = Dispatcher(context, message_factory=str)
+    dispatcher.adjustment_enabled = True
+
+    await dispatcher.flush_schedule_notifications(data)
+    context.send_message.assert_awaited_once()
+    assert context.send_message.await_args.args[0] == friend
+    waiting = await data.get_notification(queued[group]["id"])
+    assert waiting["state"] == "pending" and waiting["attempts"] == 0
+    assert "尚未建立路由" in waiting["last_error"]
+    assert not await data.pending_notifications()
+
+    adapter._session_scene["group"] = "group"
+    after_retry = (date.fromisoformat(utc_now()[:10]) + timedelta(days=1)).isoformat()
+    monkeypatch.setattr("astrbot_plugin_vtuber_monitor.core.data_manager.utc_now", lambda: after_retry)
+    await dispatcher.flush_schedule_notifications(data)
+    assert context.send_message.await_count == 2
+    assert context.send_message.await_args.args[0] == "qq:GroupMessage:group"
+    assert (await data.get_notification(queued[group]["id"]))["state"] == "done"
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,16 @@ import uuid
 from .models import utc_now, validate_uid
 
 
+CHINA_TIMEZONE = timezone(timedelta(hours=8))
+
+
 def china_today():
-    return datetime.now(timezone(timedelta(hours=8))).date()
+    return datetime.now(CHINA_TIMEZONE).date()
+
+
+def china_week_start_timestamp(today):
+    monday = today - timedelta(days=today.weekday())
+    return int(datetime.combine(monday, datetime.min.time(), CHINA_TIMEZONE).timestamp())
 
 
 def is_pending_title(title):

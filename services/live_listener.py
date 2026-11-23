@@ -8,23 +8,31 @@ from astrbot.api import logger
 
 from ..bili_client import BiliRateLimited
 
-from ..core.models import VtuberState, FollowLevel, utc_now
+from ..core.models import VtuberState, utc_now
+
+
+def live_notification(state):
+    kind = "live_start" if state.is_live else "live_end"
+    action = "开播了" if state.is_live else "下播了"
+    text = f"{state.name}（UID {state.uid}）{action}。"
+    if state.is_live and state.live_title:
+        text += f"\n直播标题：{state.live_title}"
+    if state.room_id:
+        text += f"\nhttps://live.bilibili.com/{state.room_id}"
+    return kind, text, state.live_cover if state.is_live else ""
 
 
 class LiveListener:
-    def __init__(self, data, bili, dispatcher, interval=120, jitter=60, *, special_only=False,
-                 queued=False, schedule_recorder=None):
+    def __init__(self, data, bili, interval=120, jitter=60, *, special_only=False, schedule_recorder=None):
         if not math.isfinite(interval) or not 10 <= interval <= 86400:
             raise ValueError("live_poll_interval 必须在 10 到 86400 秒之间。")
         if not math.isfinite(jitter) or not 0 <= jitter <= 3600:
             raise ValueError("live_poll_jitter 必须在 0 到 3600 秒之间。")
         self.data = data
         self.bili = bili
-        self.dispatcher = dispatcher
         self.interval = interval
         self.jitter = jitter
         self.special_only = special_only
-        self.queued = queued
         self.cooldown_until = 0
         self._poll_lock = asyncio.Lock()
         self.last_poll_at = None
@@ -51,32 +59,12 @@ class LiveListener:
                     state = await self.bili.get_live_room_info(uid)
                     if not isinstance(state, VtuberState) or state.uid != uid or state.is_live is None:
                         raise ValueError("Invalid live observation")
-                    if self.queued:
-                        text, cover = self.dispatcher.live_message(state, state.is_live)
-                        kind = "live_start" if state.is_live else "live_end"
-                        await self.data.save_vtuber_state(state, notification=(kind, text, cover, self.special_only))
-                        self.last_success_at = utc_now()
-                        if self.schedule_recorder is not None:
-                            self._pending_sync.add(uid)
-                            self._sync_ready.set()
-                        continue
-                    subscriptions = await self.data.get_subscriptions_by_uid(uid)
-                    if self.special_only:
-                        subscriptions = [s for s in subscriptions if s.level == FollowLevel.SPECIAL]
-                    if not subscriptions:
-                        continue
-                    changed = await self.data.save_vtuber_state(state)
+                    await self.data.save_vtuber_state(
+                        state, notification=(*live_notification(state), self.special_only))
                     self.last_success_at = utc_now()
                     if self.schedule_recorder is not None:
-                        try:
-                            await self.schedule_recorder.sync(uid)
-                        except Exception:
-                            self.failures += 1
-                            logger.warning("Live schedule recording deferred uid=%s", uid)
-                    if changed:
-                        push = (self.dispatcher.push_live_started if state.is_live
-                                else self.dispatcher.push_live_ended)
-                        await push(state, subscriptions)
+                        self._pending_sync.add(uid)
+                        self._sync_ready.set()
                 except BiliRateLimited as exc:
                     self.failures += 1
                     self.cooldown_until = time.monotonic() + exc.retry_after

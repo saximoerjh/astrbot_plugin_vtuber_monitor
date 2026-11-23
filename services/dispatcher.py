@@ -39,6 +39,30 @@ def notice_paths(value):
     return [str(value)]
 
 
+def resolve_notification_route(context, umo):
+    """解析实际发送目标。QQ 官方群缺路由时，框架仍可能返回发送成功。"""
+    platform_id, separator, session = umo.partition(":")
+    if not separator:
+        return umo, ""
+    message_type, _, session_id = session.partition(":")
+    if message_type != "GroupMessage":
+        return umo, ""
+    platform = context.get_platform_inst(platform_id)
+    if platform is None:
+        return umo, "目标消息平台尚未加载，等待重试"
+    if platform.meta().name not in {"qq_official", "qq_official_webhook"}:
+        return umo, ""
+    # QQ 官方适配器按群 ID 缓存路由；旧版 AstrBot 由调用方去掉独立会话的前缀。
+    session_id = session_id.rsplit("_", 1)[-1]
+    message_ids = getattr(platform, "_session_last_message_id", {})
+    scenes = getattr(platform, "_session_scene", {})
+    if message_ids.get(session_id) or (
+        scenes.get(session_id) == "group" and getattr(platform, "_allow_group_proactive_send", False)
+    ):
+        return f"{platform_id}:{message_type}:{session_id}", ""
+    return umo, "QQ 官方群会话尚未建立路由，请在群内发一条机器人能收到的消息"
+
+
 class Dispatcher:
     def __init__(self, context, *, normal_start=True, normal_end=True,
                  special_start=True, special_end=False, send_timeout=15,
@@ -130,13 +154,17 @@ class Dispatcher:
         if not enabled:
             await data.skip_notification(job["id"])
             return True
+        destination, wait_reason = resolve_notification_route(self.context, job["umo"])
+        if wait_reason:
+            await data.defer_notification(job["id"], wait_reason)
+            return False
 
         if kind == "schedule_adjusted":
             job = await self._prepare_images(data, job)
             paths = notice_paths(job["image_path"])
             attempts = job["attempts"]
             for index in range(job["next_part"], len(paths)):
-                if not await self._send_local_image(job["umo"], paths[index]):
+                if not await self._send_local_image(destination, paths[index]):
                     if attempts < 4:
                         await data.finish_notification(job["id"], False, error="附件发送失败，等待重试")
                         return False
@@ -146,9 +174,9 @@ class Dispatcher:
                 attempts = 0
 
         cover = job["image_path"] if kind == "live_start" else ""
-        delivered = await self._send(job["umo"], job["message"], cover)
+        delivered = await self._send(destination, job["message"], cover)
         if not delivered and cover:
-            delivered = await self._send(job["umo"], job["message"])
+            delivered = await self._send(destination, job["message"])
         await data.finish_notification(job["id"], delivered, error="" if delivered else "平台发送失败或超时")
         if delivered:
             self.last_success_at = utc_now()
@@ -179,9 +207,9 @@ class Dispatcher:
                 self.context.send_message(umo, self.image_message_factory(path)), self.send_timeout)
             if result is False:
                 raise RuntimeError("Platform rejected the notification image")
-        except Exception:
+        except Exception as exc:
             self.failed += 1
-            logger.exception("VTuber notification image delivery failed")
+            logger.warning("VTuber notification image delivery failed type=%s", type(exc).__name__)
             return False
         self.sent += 1
         return True
@@ -194,42 +222,12 @@ class Dispatcher:
                                           if cover else self.message_factory(text)), self.send_timeout)
             if result is False:
                 raise RuntimeError("Platform rejected the notification")
-        except Exception:
+        except Exception as exc:
             self.failed += 1
-            logger.exception("VTuber notification delivery failed")
+            logger.warning("VTuber notification delivery failed type=%s", type(exc).__name__)
             return False
         self.sent += 1
         return True
-
-    @staticmethod
-    def live_message(state, started):
-        action = "开播了" if started else "下播了"
-        text = f"{state.name}（UID {state.uid}）{action}。"
-        if started and state.live_title:
-            text += f"\n直播标题：{state.live_title}"
-        if state.room_id:
-            text += f"\nhttps://live.bilibili.com/{state.room_id}"
-        return text, state.live_cover if started else ""
-
-    async def _push(self, state, subscriptions, started):
-        text, cover = self.live_message(state, started)
-        flags = await self.notification_flags()
-        destinations = {
-            s.umo for s in subscriptions if s.uid == state.uid and (
-                (flags["special_start"] if started else flags["special_end"])
-                if s.level == FollowLevel.SPECIAL
-                else (flags["normal_start"] if started else flags["normal_end"]))
-        }
-        for umo in sorted(destinations):
-            if not await self._send(umo, text, cover) and cover:
-                # 平台拒收图片时，仍可退回发送直播链接与标题。
-                await self._send(umo, text)
-
-    async def push_live_started(self, state, subscriptions):
-        await self._push(state, subscriptions, True)
-
-    async def push_live_ended(self, state, subscriptions):
-        await self._push(state, subscriptions, False)
 
     async def push_login_status(self, umo, text):
         return await self._send(umo, text)

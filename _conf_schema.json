@@ -14,7 +14,7 @@
         "description": "有周表时自动调播",
         "type": "bool",
         "default": true,
-        "hint": "主播发动态说改期、取消或加播时，自动改本周周表。需要主播已有本周周表并选了模型；不用开“完整动态轮询”。"
+        "hint": "定期采集特别关注的动态。主播已有本周周表且模型已加载时，处理改期、取消和加播。"
       },
       "multimodal_provider_id": {
         "description": "多模态识别模型",
@@ -58,7 +58,7 @@
         "description": "周表更新通知",
         "type": "bool",
         "default": false,
-        "hint": "周表更新后向特别关注发摘要；需要动态轮询投递。"
+        "hint": "周表更新后由通知队列向特别关注会话发送摘要。"
       },
       "enable_adjustment_push": {
         "description": "调播结果通知",
@@ -101,7 +101,7 @@
   },
   "schedule": {
     "description": "周表与调播",
-    "hint": "进阶选项：默认自动调播已够用，一般无需再开启手动处理开关。",
+    "hint": "配置周表扫描时间、候选关键词和自动调播规则。",
     "type": "object",
     "items": {
       "schedule_scan_times": {
@@ -198,7 +198,7 @@
     "invisible": true
   },
   "auto_adjustment_with_schedule": {
-    "description": "特别关注已有本周周表且配置模型时自动读取动态并调播，无需手动开启动态轮询",
+    "description": "特别关注已有本周周表且模型已加载时自动处理调播",
     "type": "bool",
     "default": true,
     "invisible": true
@@ -276,13 +276,13 @@
     "invisible": true
   },
   "enable_schedule_push": {
-    "description": "周表更新摘要通知，仅发给特别关注会话，需动态轮询投递",
+    "description": "周表更新摘要通知，由通知队列投递至特别关注会话",
     "type": "bool",
     "default": false,
     "invisible": true
   },
   "enable_adjustment_push": {
-    "description": "调播生效通知，仅发给特别关注会话，需动态轮询投递",
+    "description": "调播生效通知，由通知队列投递至特别关注会话",
     "type": "bool",
     "default": false,
     "invisible": true

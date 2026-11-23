@@ -33,6 +33,9 @@ async def test_prune_keeps_recent_schedules_and_drops_the_rest(tmp_path):
     await archive(data, week=recent, path=archived)
     aged_archive = await data.save_schedule_image(1, "90", "u0", b"\x89PNGold-archive")
     await archive(data, week=long_ago, path=aged_archive)
+    older = (today - timedelta(weeks=9)).isoformat()
+    already_missing = tmp_path / "schedule_images" / "already-missing.png"
+    await archive(data, week=older, path=str(already_missing))
     parsed = await data.save_schedule_image(1, "101", "u2", b"\x89PNGparsed")
     await candidate(data, dynamic_id="101", url="u2", path=parsed, status="parsed",
                     week=recent, checked_at=stale)
@@ -54,6 +57,11 @@ async def test_prune_keeps_recent_schedules_and_drops_the_rest(tmp_path):
     rows = {row["image_url"]: row for row in await data.get_schedule_candidates(1)}
     assert rows["u3"]["local_image_path"] == "" and rows["u3"]["status"] == "skipped"
     assert rows["u2"]["local_image_path"] == parsed
+    assert (await data.get_historical_schedule(1, recent))["local_image_path"] == archived
+    assert (await data.get_historical_schedule(1, long_ago))["local_image_path"] == ""
+    assert (await data.get_historical_schedule(1, older))["local_image_path"] == ""
+    assert len(await data.get_schedule_history(1)) == 3
+    assert len(await data.get_schedule_revisions(1)) == 3
 
 
 @pytest.mark.asyncio
@@ -88,12 +96,13 @@ async def test_prune_keeps_the_image_a_pending_scan_is_waiting_for(tmp_path):
 async def test_classification_scratch_is_wiped_by_prune(tmp_path):
     data = DataManager(tmp_path)
     await data.initialize()
-    scratch = await data.save_classification_image(b"\x89PNGscratch")
-    assert Path(scratch).parent.name == "classify_tmp" and Path(scratch).is_file()
+    scratch = tmp_path / "classify_tmp" / "legacy.png"
+    scratch.parent.mkdir()
+    scratch.write_bytes(b"\x89PNGscratch")
     # 临时图不占候选原图目录。
     assert list((tmp_path / "schedule_images").glob("*")) == []
     result = await data.prune_schedule_images()
-    assert result["scratch"] == 1 and not Path(scratch).exists()
+    assert result["scratch"] == 1 and not scratch.exists()
 
 
 @pytest.mark.asyncio

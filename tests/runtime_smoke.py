@@ -15,6 +15,7 @@ def main():
             os.chdir(directory)
             from astrbot.api.star import StarTools
             from astrbot_plugin_vtuber_monitor.main import MyPlugin
+            from astrbot_plugin_vtuber_monitor.bili_client import BiliClient
             from astrbot_plugin_vtuber_monitor.tools.schedule_tools import build_toolset
             from astrbot.core.star.filter.command import CommandFilter, GreedyStr
             from types import SimpleNamespace
@@ -37,10 +38,20 @@ def main():
                 migrated["live"]["live_poll_interval"] = 150
                 migrated.save_config()
                 assert prepare_config(AstrBotConfig(str(config_path), schema=schema))["live_poll_interval"] == 150
+                grouped_path = Path(directory) / "grouped_config.json"
+                grouped_path.write_text(json.dumps({"live": {"live_poll_interval": 180}}), encoding="utf-8")
+                assert prepare_config(AstrBotConfig(str(grouped_path), schema=schema))["live_poll_interval"] == 180
                 with patch.object(StarTools, "get_data_dir", return_value=Path(directory) / "plugin_data"):
-                    plugin = MyPlugin(object(), {})
+                    context = SimpleNamespace(get_platform_inst=lambda _: None,
+                                              get_provider_by_id=lambda _: None,
+                                              get_registered_star=lambda _: None)
+                    plugin = MyPlugin(context, {})
                     try:
                         await plugin.initialize()
+                        bili = plugin.bili
+                        assert plugin.live_listener_task is None
+                        assert plugin.notification_task is None
+                        await plugin.on_astrbot_loaded()
                         class Event:
                             def plain_result(self, text):
                                 return text
@@ -48,10 +59,8 @@ def main():
                         assert plugin.live_listener_task is not None
                         assert plugin.live_listener.special_only
                         assert plugin.dynamic_listener_task is not None
-                        assert not plugin.dynamic_listener.eligible_only
                         assert plugin.notification_task is not None and not plugin.notification_task.done()
                         assert plugin.live_reconciliation_task is not None
-                        assert plugin.dynamic_listener.require_schedule
                         live_task, dynamic_task = plugin.live_listener_task, plugin.dynamic_listener_task
                         from astrbot.core.message.components import Plain, Image
                         live_message = make_live_message("live title and link", "https://i0.hdslb.com/cover.jpg")
@@ -99,10 +108,28 @@ def main():
                         assert isinstance(component, Image) and Path(component.path).is_file()
                     finally:
                         await plugin.terminate()
-                    assert plugin.bili.http.is_closed
+                    assert plugin.bili is None and bili.http.is_closed
                     assert watch_task.cancelled()
                     assert live_task.cancelled() and dynamic_task.cancelled()
                     assert profile_task.cancelled()
+                    context.get_platform_inst = lambda platform_id: object() if platform_id == "webchat" else None
+                    reloaded = MyPlugin(context, {})
+                    try:
+                        await reloaded.initialize()
+                        assert reloaded.notification_task is not None
+                        assert reloaded.live_listener_task is not None
+                    finally:
+                        await reloaded.terminate()
+                    failed = MyPlugin(context, {"schedule_scan_times": ["25:00"]})
+                    client = BiliClient()
+                    with patch("astrbot_plugin_vtuber_monitor.main.BiliClient", return_value=client):
+                        try:
+                            await failed.initialize()
+                        except ValueError:
+                            assert failed.bili is None and client.http.is_closed
+                            assert failed.notification_task is None
+                        else:
+                            raise AssertionError("Invalid schedule configuration was accepted")
                     print("PASS: real AstrBot lifecycle, live notification Plain/Image, ToolSet, GreedyStr and forward Nodes serialization; no network/messages")
             asyncio.run(check())
         finally:

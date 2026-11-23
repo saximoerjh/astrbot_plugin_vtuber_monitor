@@ -27,6 +27,9 @@ class AdjustmentAgent:
     def is_candidate(self, text):
         return isinstance(text, str) and bool(self.pattern.search(text[:12000]))
 
+    def provider_available(self):
+        return bool(self.provider_id and self.context.get_provider_by_id(self.provider_id) is not None)
+
     async def process(self, post, *, dry_run=False, revision=""):
         if not isinstance(post, DynamicPost) or len(post.text) > 12000:
             raise ValueError("调播动态格式或长度无效。")
