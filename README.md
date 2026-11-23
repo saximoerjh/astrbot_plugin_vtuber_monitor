@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="logo.png" width="132" alt="VTuber 直播与周表助手插件图标">
+  <img src="logo.png" width="152" height="152" alt="VTuber 直播与周表助手头像">
 </p>
 
 <h1 align="center">astrbot_plugin_vtuber_monitor</h1>
 
-<p align="center">为 <a href="https://github.com/AstrBotDevs/AstrBot">AstrBot</a> 设计的 Bilibili VTuber 直播与周表追踪插件：订阅主播后自动推送上下播、解析并维护周表，必要时根据动态自动调播。为vibe coding得到的石山产物，当前只针对 **VirtuaReal团体** 进行过测试，正在debug以及图谋加入更多后续功能。。。</p>
+<p align="center">为 <a href="https://github.com/AstrBotDevs/AstrBot">AstrBot</a> 设计的 Bilibili VTuber 直播与周表追踪插件：订阅主播后自动推送上下播、解析并维护周表，必要时根据动态自动调播。为vibe coding得到的石山产物，当前只针对 <strong>VirtuaReal团体</strong> 进行过测试，正在debug以及图谋加入更多后续功能。。。</p>
 
 ## ✨ 功能特性
 
@@ -19,14 +19,38 @@
 
 ### 界面预览
 
-<a href="docs/vt_schedule.webp"><img src="docs/vt_schedule.webp" width="520" alt="/vt_schedule 在聊天里的样子"></a>
+<p align="center">
+  <a href="docs/vt_schedule.png"><img src="docs/vt_schedule.png" width="720" alt="在聊天中查询 /vt_schedule 后收到的七天直播周表"></a>
+</p>
 
-在聊天里收到 `/vt_schedule` 的样子：一周拆成上下两行、每列一天，今天所在列高亮，未兑现的场次标红，底部是本周时长与迟到统计，顶部横幅取自主播真实的 B 站空间资料。
+`/vt_schedule` 将一周排期分成两行，高亮当天，下方显示直播时长和迟到统计。点击任一截图可查看原图。
 
-| 上播通知 | 凌晨四点问候 |
+| 开播通知 | 订阅列表 |
 | :---: | :---: |
-| <img src="docs/vt_start.webp" width="330" alt="上播通知"> | <img src="docs/vt_4016.webp" width="330" alt="/vt_4016 回复"> |
-| 带直播间封面、标题与链接 | `/vt_4016` 随机挑一个正处于凌晨四点的国家 |
+| <a href="docs/zhibotongzhi.png"><img src="docs/zhibotongzhi.png" width="260" alt="带封面、标题和直播间链接的开播通知"></a> | <a href="docs/vt_list.png"><img src="docs/vt_list.png" width="400" alt="/vt_list 显示主播别名和关注级别"></a> |
+
+#### 周表更新与自动调播
+
+**周表动态补录排期**
+
+<p align="center">
+  <a href="docs/schedule_update.png"><img src="docs/schedule_update.png" width="680" alt="机器人发送主播周表原图，并通知新增的直播排期"></a>
+</p>
+
+**动态正文触发调播**
+
+<p align="center">
+  <a href="docs/dongtaidiaobo.png"><img src="docs/dongtaidiaobo.png" width="720" alt="机器人引用主播动态并说明自动调播的结果和依据"></a>
+</p>
+
+<details>
+<summary>凌晨四点问候 · /vt_4016</summary>
+
+<p align="center">
+  <a href="docs/vt_4016.webp"><img src="docs/vt_4016.webp" width="520" alt="/vt_4016 回复当前正处于凌晨四点的国家"></a>
+</p>
+
+</details>
 
 ## 🚀 安装
 
@@ -169,7 +193,7 @@ python tests/dynamic_preview.py --variants
 
 扫码凭据保存在本机数据库中。Git 忽略运行期目录、数据库及事务文件、本机配置和登录二维码目录。
 
-仓库根目录的 `logo.png`（256×256）是 WebUI 插件卡片上的图标，AstrBot 按固定文件名读取，`metadata.yaml` 里没有对应字段；这张图由 `docs/4016_monitor.png` 裁出（脚本自动去掉四周同色留白），改 `tools/make_logo.py` 的 `SOURCE`／`RADIUS`／`PADDING` 再跑一次即可重新生成。
+仓库根目录的 `logo.png`（256×256）用于 README 头图和 AstrBot WebUI 插件卡片。它取自 `docs/monitor.png` 的头像部分。要调整裁切范围，修改 `tools/make_logo.py` 的 `CROP_BOX` 后运行 `python tools/make_logo.py`。
 
 ## 📄 许可
 
