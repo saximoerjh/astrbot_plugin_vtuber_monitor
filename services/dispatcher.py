@@ -11,6 +11,7 @@ from ..core.models import FollowLevel, utc_now, validate_umo
 
 LIVE_NOTIFICATION_TTL = timedelta(minutes=30)
 LIVE_NOTIFICATION_FLAGS = {"live_start": "start", "live_end": "end"}
+UNKNOWN_DELIVERY = "平台送达状态未知，未自动重发"
 
 
 def make_message(text):
@@ -78,7 +79,7 @@ class Dispatcher:
         normal_end=True,
         special_start=True,
         special_end=False,
-        send_timeout=15,
+        send_timeout=90,
         message_factory=make_message,
         live_message_factory=make_live_message,
         image_message_factory=make_image_message,
@@ -98,6 +99,8 @@ class Dispatcher:
         self.flags_source = "启动时的配置"
         self.notice_image = notice_image
         self.send_timeout = send_timeout
+        # 一轮最多包含图文发送和纯文字回退；多张图每发完一张即续期。
+        self.claim_duration = timedelta(seconds=2 * send_timeout + 30)
         self.message_factory = message_factory
         self.live_message_factory = live_message_factory
         self.image_message_factory = image_message_factory
@@ -212,41 +215,61 @@ class Dispatcher:
             return False
 
         if kind == "schedule_adjusted":
-            job = await self._prepare_images(data, job)
+            await self._prepare_images(data, job)
+        job = await data.claim_notification(job["id"], self.claim_duration)
+        if job is None:
+            return False
+
+        if kind == "schedule_adjusted":
             paths = notice_paths(job["image_path"])
             attempts = job["attempts"]
             for index in range(job["next_part"], len(paths)):
-                if not await self._send_local_image(destination, paths[index]):
+                delivered = await self._send(
+                    destination, self.image_message_factory, paths[index], job_id=job["id"]
+                )
+                reason = ""
+                if delivered is None:
+                    reason = f"附件{UNKNOWN_DELIVERY}"
+                elif delivered is False:
                     if attempts < 4:
                         await data.finish_notification(
                             job["id"], False, error="附件发送失败，等待重试"
                         )
                         return False
-                    await data.advance_notification(
-                        job["id"], index + 1, "附件发送失败，已发送可用部分"
-                    )
-                else:
-                    await data.advance_notification(job["id"], index + 1)
+                    reason = "附件发送失败，已发送可用部分"
+                if not await data.advance_notification(
+                    job["id"], index + 1, self.claim_duration, reason
+                ):
+                    return False
                 attempts = 0
 
         cover = job["image_path"] if kind == "live_start" else ""
-        delivered = await self._send(destination, job["message"], cover)
-        if not delivered and cover:
-            delivered = await self._send(destination, job["message"])
-        await data.finish_notification(
-            job["id"], delivered, error="" if delivered else "平台发送失败或超时"
-        )
+        delivered = False
+        if cover:
+            delivered = await self._send(
+                destination,
+                self.live_message_factory,
+                job["message"],
+                cover,
+                job_id=job["id"],
+            )
+        if delivered is False:
+            delivered = await self._send(
+                destination, self.message_factory, job["message"], job_id=job["id"]
+            )
+        error = {True: "", False: "平台发送失败", None: UNKNOWN_DELIVERY}[delivered]
+        await data.finish_notification(job["id"], delivered, error=error)
         if delivered:
             self.last_success_at = utc_now()
-        return delivered
+        return delivered is not False
 
     async def _prepare_images(self, data, job):
         if not job["source_id"]:
-            return job
+            return
         async with self._image_lock:
             job = await data.get_notification(job["id"])
             if not job["source_id"]:
-                return job
+                return
             source_id = job["source_id"]
             error = ""
             try:
@@ -263,49 +286,38 @@ class Dispatcher:
                     type(exc).__name__,
                 )
             await data.set_notification_images(job["uid"], source_id, paths, error)
-            return await data.get_notification(job["id"])
 
-    async def _send_local_image(self, umo, path):
-        """发送本地截图；失败只记录，不算整条通知失败。"""
+    async def _send(self, umo, factory, *args, job_id=None):
+        """True 表示平台调用完成，False 表示明确未发出，None 表示结果未知。"""
         validate_umo(umo)
         try:
-            result = await asyncio.wait_for(
-                self.context.send_message(umo, self.image_message_factory(path)),
-                self.send_timeout,
-            )
-            if result is False:
-                raise RuntimeError("Platform rejected the notification image")
+            message = factory(*args)
         except Exception as exc:
             self.failed += 1
             logger.warning(
-                "VTuber notification image delivery failed type=%s", type(exc).__name__
+                "Notification message build failed job=%s type=%s",
+                job_id,
+                type(exc).__name__,
             )
             return False
-        self.sent += 1
-        return True
-
-    async def _send(self, umo, text, cover=""):
-        validate_umo(umo)
         try:
             result = await asyncio.wait_for(
-                self.context.send_message(
-                    umo,
-                    self.live_message_factory(text, cover)
-                    if cover
-                    else self.message_factory(text),
-                ),
-                self.send_timeout,
+                self.context.send_message(umo, message), self.send_timeout
             )
-            if result is False:
-                raise RuntimeError("Platform rejected the notification")
         except Exception as exc:
             self.failed += 1
             logger.warning(
-                "VTuber notification delivery failed type=%s", type(exc).__name__
+                "Notification delivery unconfirmed job=%s type=%s",
+                job_id,
+                type(exc).__name__,
             )
+            return None
+        if result is False:
+            self.failed += 1
+            logger.warning("Notification rejected by platform job=%s", job_id)
             return False
         self.sent += 1
         return True
 
     async def push_login_status(self, umo, text):
-        return await self._send(umo, text)
+        return (await self._send(umo, self.message_factory, text)) is True

@@ -920,7 +920,10 @@ class MyPlugin(Star):
                 f"失败 {counts.get('failed', 0)}"
             )
             if table == "schedule_outbox":
-                value += f"、部分发送 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
+                value += (
+                    f"、发送中 {counts.get('sending', 0)}、送达未知 {counts.get('uncertain', 0)}"
+                    f"、部分发送 {counts.get('partial', 0)}、已跳过 {counts.get('skipped', 0)}"
+                )
             value += f"、已过期 {counts.get('expired', 0)}"
             if counts.get("pending"):
                 value += (

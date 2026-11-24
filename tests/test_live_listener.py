@@ -217,7 +217,7 @@ async def test_dispatcher_failures_options_and_special(tmp_path):
     listener = LiveListener(data, bili)
     bili.get_live_room_info.return_value = VtuberState(1, "主播", 10, True)
     context = AsyncMock()
-    context.send_message.side_effect = [RuntimeError("failed"), True]
+    context.send_message.side_effect = [False, True]
     dispatcher = Dispatcher(context, message_factory=str)
     await listener.poll_once()
     await dispatcher.flush_schedule_notifications(data)

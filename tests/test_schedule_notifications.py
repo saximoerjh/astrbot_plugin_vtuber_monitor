@@ -1,13 +1,13 @@
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+import asyncio
 from dataclasses import replace
 from datetime import date, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot_plugin_vtuber_monitor.core.data_manager import DataManager
-from astrbot_plugin_vtuber_monitor.core.models import VtuberState
-from astrbot_plugin_vtuber_monitor.core.models import utc_now
+from astrbot_plugin_vtuber_monitor.core.models import VtuberState, utc_now
 from astrbot_plugin_vtuber_monitor.services.dispatcher import Dispatcher
 from test_schedule_service import setup_schedule
 
@@ -282,6 +282,104 @@ async def test_attachment_retries_resume_from_last_completed_part(tmp_path):
         "text",
     ]
     assert (await data.get_notification(job["id"]))["state"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_dispatchers_cannot_both_send_same_notice(tmp_path):
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
+    await data.add_subscription(VtuberState(1, "one"), "a", "special")
+    await service.cancel_stream(
+        1, schedule.streams[0].id, "取消", source_dynamic_id="101"
+    )
+    queued = await data.pending_notifications()
+    competing = DataManager(tmp_path)
+    await competing.initialize()
+    competing.pending_notifications = AsyncMock(return_value=queued)
+    sending = asyncio.Event()
+    release = asyncio.Event()
+
+    async def send(*_):
+        sending.set()
+        await release.wait()
+        return True
+
+    first_context = SimpleNamespace(send_message=AsyncMock(side_effect=send))
+    other_context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+    options = {
+        "message_factory": lambda _: "text",
+        "image_message_factory": str,
+        "notice_image": AsyncMock(return_value=["image"]),
+    }
+    first = Dispatcher(first_context, **options)
+    second = Dispatcher(other_context, **options)
+    first.adjustment_enabled = second.adjustment_enabled = True
+    task = asyncio.create_task(first.flush_schedule_notifications(data))
+    try:
+        await asyncio.wait_for(sending.wait(), 5)
+        await second.flush_schedule_notifications(competing)
+    finally:
+        release.set()
+        await task
+    other_context.send_message.assert_not_awaited()
+    assert [c.args[1] for c in first_context.send_message.await_args_list] == [
+        "image",
+        "text",
+    ]
+    saved = await data.get_notification(queued[0]["id"])
+    assert (saved["state"], saved["next_part"], saved["attempts"]) == ("done", 1, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unconfirmed_part", ["image", "text"])
+async def test_unconfirmed_delivery_is_not_resent(tmp_path, unconfirmed_part):
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
+    await data.add_subscription(VtuberState(1, "one"), "a", "special")
+    await service.cancel_stream(
+        1, schedule.streams[0].id, "取消", source_dynamic_id="101"
+    )
+    job = (await data.pending_notifications())[0]
+    delivered = []
+
+    async def send(_, part):
+        delivered.append(part)
+        if part == unconfirmed_part:
+            # 平台已收到消息，调用方仍在等待响应。
+            await asyncio.Event().wait()
+        return True
+
+    dispatcher = Dispatcher(
+        SimpleNamespace(send_message=send),
+        send_timeout=0.02,
+        message_factory=lambda _: "text",
+        image_message_factory=str,
+        notice_image=AsyncMock(return_value=["image"]),
+    )
+    dispatcher.adjustment_enabled = True
+    await dispatcher.flush_schedule_notifications(data)
+    await dispatcher.flush_schedule_notifications(data)
+    assert delivered == ["image", "text"]
+    saved = await data.get_notification(job["id"])
+    assert saved["state"] == ("partial" if unconfirmed_part == "image" else "uncertain")
+    assert "未自动重发" in saved["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_claim_expires_without_resending(tmp_path, monkeypatch):
+    data, service, schedule = await setup_schedule(tmp_path, adjustment_push=True)
+    await data.add_subscription(VtuberState(1, "one"), "a", "special")
+    await service.cancel_stream(1, schedule.streams[0].id, "取消")
+    job = (await data.pending_notifications())[0]
+    claimed = await data.claim_notification(job["id"], timedelta(minutes=2))
+    reopened = DataManager(tmp_path)
+    await reopened.initialize()
+    assert not await reopened.pending_notifications()
+    monkeypatch.setattr(
+        "astrbot_plugin_vtuber_monitor.core.data_manager.utc_now",
+        lambda: claimed["retry_at"],
+    )
+    assert not await reopened.pending_notifications()
+    saved = await reopened.get_notification(job["id"])
+    assert saved["state"] == "uncertain" and "任务中断" in saved["last_error"]
 
 
 @pytest.mark.asyncio

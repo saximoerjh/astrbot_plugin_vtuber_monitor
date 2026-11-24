@@ -589,7 +589,7 @@ class DataManager:
             if notices.is_dir():
                 pending_names = set()
                 for row in db.execute(
-                    "SELECT image_path FROM schedule_outbox WHERE state='pending' AND kind='schedule_adjusted'"
+                    "SELECT image_path FROM schedule_outbox WHERE state IN ('pending', 'sending') AND kind='schedule_adjusted'"
                 ):
                     value = row[0]
                     try:
@@ -1108,20 +1108,49 @@ class DataManager:
 
     async def pending_notifications(self):
         now = utc_now()
-        return await asyncio.to_thread(
-            self._run,
-            lambda db: [
+
+        def read(db):
+            expired = "state='sending' AND retry_at<=?"
+            if db.execute(
+                f"SELECT 1 FROM schedule_outbox WHERE {expired} LIMIT 1", (now,)
+            ).fetchone():
+                db.execute(
+                    f"""UPDATE schedule_outbox SET state='uncertain', retry_at='',
+                        last_error='发送期间任务中断，平台送达状态未知，未自动重发'
+                        WHERE {expired}""",
+                    (now,),
+                )
+            return [
                 dict(row)
                 for row in db.execute(
                     """SELECT job.* FROM schedule_outbox AS job
                WHERE job.state='pending' AND job.retry_at<=? AND NOT EXISTS (
                    SELECT 1 FROM schedule_outbox AS earlier WHERE earlier.umo=job.umo
-                   AND earlier.state='pending' AND earlier.id<job.id AND earlier.retry_at>?
+                   AND earlier.id<job.id AND (earlier.state='sending'
+                   OR (earlier.state='pending' AND earlier.retry_at>?))
                ) ORDER BY job.id LIMIT 50""",
                     (now, now),
                 )
-            ],
+            ]
+
+        return await asyncio.to_thread(self._run, read)
+
+    async def claim_notification(self, notification_id, hold_for):
+        """在调用平台前持久化领取；重载或并发时，同一通知只有一个发送者。"""
+        now = utc_now()
+        deadline = (datetime.fromisoformat(now) + hold_for).isoformat()
+        row = await asyncio.to_thread(
+            self._run,
+            lambda db: db.execute(
+                """UPDATE schedule_outbox AS job SET state='sending', retry_at=?
+                   WHERE id=? AND state='pending' AND retry_at<=? AND NOT EXISTS (
+                       SELECT 1 FROM schedule_outbox AS earlier WHERE earlier.umo=job.umo
+                       AND earlier.id<job.id AND earlier.state IN ('pending', 'sending')
+                   ) RETURNING *""",
+                (deadline, notification_id, now),
+            ).fetchone(),
         )
+        return dict(row) if row else None
 
     async def defer_notification(self, notification_id, error):
         retry_at = (datetime.now(timezone.utc) + timedelta(seconds=15)).isoformat()
@@ -1137,10 +1166,12 @@ class DataManager:
         await asyncio.to_thread(
             self._run,
             lambda db: db.execute(
-                """UPDATE schedule_outbox SET attempts=attempts+1, retry_at='', last_error=COALESCE(NULLIF(?,''),partial_reason),
-               state=CASE WHEN ? THEN CASE WHEN partial_reason='' THEN 'done' ELSE 'partial' END
-               WHEN attempts>=4 THEN 'failed' ELSE 'pending' END WHERE id=?""",
-                (error, success, notification_id),
+                """UPDATE schedule_outbox SET attempts=attempts+1, retry_at='',
+               last_error=COALESCE(NULLIF(?,''),partial_reason),
+               state=CASE WHEN ? IS NULL THEN 'uncertain'
+               WHEN ? THEN CASE WHEN partial_reason='' THEN 'done' ELSE 'partial' END
+               WHEN attempts>=4 THEN 'failed' ELSE 'pending' END WHERE id=? AND state='sending'""",
+                (error, success, success, notification_id),
             ),
         )
 
@@ -1148,7 +1179,7 @@ class DataManager:
         await asyncio.to_thread(
             self._run,
             lambda db: db.execute(
-                "UPDATE schedule_outbox SET state='skipped' WHERE id=?",
+                "UPDATE schedule_outbox SET state='skipped' WHERE id=? AND state='pending'",
                 (notification_id,),
             ),
         )
@@ -1163,14 +1194,18 @@ class DataManager:
             ),
         )
 
-    async def advance_notification(self, notification_id, next_part, partial_reason=""):
-        await asyncio.to_thread(
+    async def advance_notification(
+        self, notification_id, next_part, hold_for, partial_reason=""
+    ):
+        retry_at = (datetime.now(timezone.utc) + hold_for).isoformat()
+        return await asyncio.to_thread(
             self._run,
             lambda db: db.execute(
-                """UPDATE schedule_outbox SET next_part=?, attempts=0,
-               partial_reason=COALESCE(NULLIF(?,''),partial_reason) WHERE id=?""",
-                (next_part, partial_reason, notification_id),
-            ),
+                """UPDATE schedule_outbox SET next_part=?, attempts=0, retry_at=?,
+               partial_reason=COALESCE(NULLIF(?,''),partial_reason)
+               WHERE id=? AND state='sending'""",
+                (next_part, retry_at, partial_reason, notification_id),
+            ).rowcount == 1,
         )
 
     async def get_notification(self, notification_id):
