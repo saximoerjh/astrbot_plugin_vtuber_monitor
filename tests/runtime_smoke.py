@@ -15,7 +15,7 @@ def main():
         try:
             os.chdir(directory)
             from astrbot.api.star import StarTools
-            from astrbot_plugin_vtuber_monitor.main import MyPlugin
+            from astrbot_plugin_vtuber_monitor.main import MyPlugin, NOTIFICATION_TASK_NAME
             from astrbot_plugin_vtuber_monitor.bili_client import BiliClient
             from astrbot_plugin_vtuber_monitor.tools.schedule_tools import build_toolset
             from astrbot.core.star.filter.command import CommandFilter, GreedyStr
@@ -219,13 +219,24 @@ def main():
                     context.get_platform_inst = lambda platform_id: (
                         object() if platform_id == "webchat" else None
                     )
+                    orphan = asyncio.create_task(
+                        plugin.dispatcher.run(plugin.targets.data),
+                        name=NOTIFICATION_TASK_NAME,
+                    )
+                    unrelated = asyncio.create_task(
+                        asyncio.Event().wait(), name=NOTIFICATION_TASK_NAME
+                    )
                     reloaded = MyPlugin(context, {})
                     try:
                         await reloaded.initialize()
+                        assert orphan.cancelled() and not unrelated.done()
                         assert reloaded.notification_task is not None
                         assert reloaded.live_listener_task is not None
                     finally:
                         await reloaded.terminate()
+                        unrelated.cancel()
+                        orphan.cancel()
+                        await asyncio.gather(orphan, unrelated, return_exceptions=True)
                     failed = MyPlugin(context, {"schedule_scan_times": ["25:00"]})
                     client = BiliClient()
                     with patch(

@@ -219,6 +219,13 @@ class Dispatcher:
         job = await data.claim_notification(job["id"], self.claim_duration)
         if job is None:
             return False
+        logger.info(
+            "VTuber notification claimed job=%s kind=%s part=%s attempts=%s",
+            job["id"],
+            kind,
+            job["next_part"],
+            job["attempts"],
+        )
 
         if kind == "schedule_adjusted":
             paths = notice_paths(job["image_path"])
@@ -259,6 +266,11 @@ class Dispatcher:
             )
         error = {True: "", False: "平台发送失败", None: UNKNOWN_DELIVERY}[delivered]
         await data.finish_notification(job["id"], delivered, error=error)
+        logger.info(
+            "VTuber notification finished job=%s result=%s",
+            job["id"],
+            {True: "platform_returned", False: "rejected", None: "unconfirmed"}[delivered],
+        )
         if delivered:
             self.last_success_at = utc_now()
         return delivered is not False

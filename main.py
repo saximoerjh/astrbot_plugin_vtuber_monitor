@@ -40,6 +40,7 @@ from .services.schedule_display import format_stream, format_live_summary
 from .services.schedule_renderer import ScheduleRenderer, build_schedule_view
 
 PLUGIN_NAME = "astrbot_plugin_vtuber_monitor"
+NOTIFICATION_TASK_NAME = "vtuber-monitor-notifications"
 CHINA = timezone(timedelta(hours=8))
 
 
@@ -99,6 +100,7 @@ class MyPlugin(Star):
         if self.live_listener is not None:
             return
         try:
+            await self._stop_old_notification_tasks()
             await self._initialize()
             # WebChat is added after AstrBot initializes its providers and platforms.
             # On hot reload the startup hook has already fired.
@@ -107,6 +109,24 @@ class MyPlugin(Star):
         except BaseException:
             await self.terminate()
             raise
+
+    async def _stop_old_notification_tasks(self):
+        """热重载时回收已失去实例引用的旧发送任务。"""
+        tasks = []
+        for task in asyncio.all_tasks():
+            if task.get_name() != NOTIFICATION_TASK_NAME:
+                continue
+            coro = task.get_coro()
+            code = getattr(coro, "cr_code", None)
+            if code and (
+                code.co_filename == Dispatcher.run.__code__.co_filename
+                and coro.__qualname__ == Dispatcher.run.__qualname__
+            ):
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("VTuber notification startup stopped_old_tasks=%s", len(tasks))
 
     async def _initialize(self):
         data_dir = StarTools.get_data_dir(PLUGIN_NAME)
@@ -264,7 +284,7 @@ class MyPlugin(Star):
         ):
             self.notification_task = asyncio.create_task(
                 self.dispatcher.run(self.targets.data),
-                name="vtuber-monitor-notifications",
+                name=NOTIFICATION_TASK_NAME,
             )
         if getattr(self, "targets", None) is not None and self.retention_task is None:
             self.retention_task = asyncio.create_task(
