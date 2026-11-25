@@ -46,8 +46,6 @@ STATUS_CLASSES = {
     "unknown": "s-unknown",
     UNFULFILLED_STATUS: "s-unfulfilled",
 }
-# 算不算迟到：5 分钟以内属于正常开播准备，不算迟到，否则每场都会命中。
-LATE_THRESHOLD = timedelta(minutes=5)
 
 
 class ScheduleRenderError(Exception):
@@ -82,7 +80,7 @@ def _timing_stats(streams):
     """本周时长与准时性：总时长／日均时长／迟到次数／平均迟到。
 
     时长按场次累计（中途重开的两段相加），仍在直播的场次算不出时长，只参与准时性；
-    迟到以「排期开始时间」为基准，没有排期或没有实际开播的场次不参与统计。
+    实际开播晚于生效排期就算迟到。没有排期或没有实际开播的场次不参与统计。
     日均时长按「真正开播过的天数」摊：同一天播两场只算一天，休息日不参与平均。
     """
     durations, delays, per_day, comparable = [], [], {}, 0
@@ -109,7 +107,7 @@ def _timing_stats(streams):
         delay = (
             min(datetime.fromisoformat(item["start"]) for item in intervals) - planned
         )
-        if delay > LATE_THRESHOLD:
+        if delay > timedelta():
             delays.append(delay)
     total = sum(durations, timedelta())
     return {

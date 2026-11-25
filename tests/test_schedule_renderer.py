@@ -361,27 +361,28 @@ def test_daily_average_spreads_the_total_over_days_with_streams():
     assert two_days["直播总时长"] == "5小时" and two_days["日均直播时长"] == "2小时30分"
 
 
-def test_stats_require_more_than_five_minutes_to_count_as_late():
-    close = stats_of(
+def test_stats_count_any_delay_after_the_planned_start():
+    on_time = stats_of(
         [
             plan(
                 actual_intervals=[
-                    interval("2026-09-21T20:05:00+08:00", "2026-09-21T22:00:00+08:00")
+                    interval("2026-09-21T20:00:00+08:00", "2026-09-21T22:00:00+08:00")
                 ]
             )
         ]
     )
-    assert close["迟到次数"] == "0 次"
+    assert on_time["迟到次数"] == "0 次"
     late = stats_of(
         [
             plan(
                 actual_intervals=[
-                    interval("2026-09-21T20:05:01+08:00", "2026-09-21T22:00:00+08:00")
+                    interval("2026-09-21T20:00:01+08:00", "2026-09-21T22:00:00+08:00")
                 ]
             )
         ]
     )
     assert late["迟到次数"] == "1 次"
+    assert late["平均迟到"] == "不足1分"
 
 
 def test_stats_average_lateness_uses_only_late_streams():
@@ -409,7 +410,7 @@ def test_stats_average_lateness_uses_only_late_streams():
                 original_date="2026-09-23",
                 original_start_time="21:00",
                 actual_intervals=[
-                    interval("2026-09-23T21:01:00+08:00", "2026-09-23T23:00:00+08:00")
+                    interval("2026-09-23T21:00:00+08:00", "2026-09-23T23:00:00+08:00")
                 ],
             ),
         ]
@@ -422,7 +423,7 @@ def test_stats_average_lateness_uses_only_late_streams():
 def test_stats_compare_against_the_rescheduled_time_and_skip_unpromised_streams():
     built = stats_of(
         [
-            # 原定 09-24 21:00 调播到 09-23 22:30，实际 22:32 开播：迟到 2 分，不算迟到。
+            # 原定 09-24 21:00 调播到 09-23 22:30，实际 22:32 开播，迟到 2 分。
             plan(
                 date="2026-09-23",
                 start_time="22:30",
@@ -456,13 +457,13 @@ def test_stats_compare_against_the_rescheduled_time_and_skip_unpromised_streams(
                 original_date=None,
                 original_start_time=None,
                 actual_intervals=[
-                    interval("2026-09-25T20:00:00+08:00", "2026-09-25T21:00:00+08:00")
+                    interval("2026-09-25T20:05:00+08:00", "2026-09-25T21:05:00+08:00")
                 ],
             ),
         ]
     )
-    assert built["迟到次数"] == "0 次"
-    assert built["平均迟到"] == "—"
+    assert built["迟到次数"] == "1 次"
+    assert built["平均迟到"] == "2分"
     # 1 小时 58 分 + 2 小时 + 1 小时 = 4 小时 58 分，分布在三天 → 日均 1 小时 39 分。
     assert built["直播总时长"] == "4小时58分"
     assert built["日均直播时长"] == "1小时39分"
